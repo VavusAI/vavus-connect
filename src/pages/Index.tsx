@@ -43,7 +43,7 @@ const Index: React.FC = () => {
     {
       icon: Globe,
       title: 'Universal Translation',
-      description: 'Translate between 100+ languages with AI-powered accuracy and context awareness.'
+      description: 'Translate between 400+ languages with AI-powered accuracy and context awareness.'
     },
     {
       icon: Smartphone,

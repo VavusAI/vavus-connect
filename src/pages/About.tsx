@@ -25,29 +25,11 @@ const About = () => {
 
   const team = [
     {
-      name: 'Alex Chen',
-      role: 'CEO & Co-founder',
+      name: 'Dragos Constantine',
+      role: 'Founder',
       bio: 'Former Google AI researcher with 10+ years in machine learning and NLP.',
       image: '👨‍💼'
     },
-    {
-      name: 'Sarah Kumar',
-      role: 'CTO & Co-founder',
-      bio: 'Ex-Microsoft engineer specializing in distributed systems and security.',
-      image: '👩‍💻'
-    },
-    {
-      name: 'Marcus Johnson',
-      role: 'Head of Design',
-      bio: 'Design lead with experience at Apple and Figma, focused on human-centered AI.',
-      image: '👨‍🎨'
-    },
-    {
-      name: 'Dr. Elena Rodriguez',
-      role: 'AI Research Lead',
-      bio: 'PhD in Computational Linguistics from Stanford, expert in multilingual AI.',
-      image: '👩‍🔬'
-    }
   ];
 
   return (

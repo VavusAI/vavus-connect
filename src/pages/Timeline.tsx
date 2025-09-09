@@ -11,7 +11,7 @@ const Timeline = () => {
 
   const milestones = [
     {
-      quarter: 'Q4 2023',
+      quarter: 'Q3 2025',
       status: 'completed',
       category: 'Product',
       title: 'Core AI Engine',
@@ -23,7 +23,7 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q1 2024',
+      quarter: 'Q3 2025',
       status: 'completed',
       category: 'Security',
       title: 'Security Framework',
@@ -35,7 +35,7 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q2 2024',
+      quarter: 'Q4 2025',
       status: 'in-progress',
       category: 'Apps',
       title: 'Beta Applications',
@@ -61,11 +61,11 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q4 2024',
+      quarter: 'Q4 2025',
       status: 'planned',
-      category: 'Product',
-      title: 'Language Expansion',
-      description: 'Expand language support to 100+ languages with regional variants.',
+      category: 'Product Launch',
+      title: 'Kickstarter campaign',
+      description: 'Launch Vavus AI device on kickstarter.',
       items: [
         'Additional language models',
         'Regional dialect support',

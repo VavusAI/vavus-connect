@@ -202,7 +202,7 @@ const Translate = () => {
             <div className="bg-primary-light p-3 rounded-lg w-fit mx-auto mb-4">
               <Globe className="h-6 w-6 text-primary" />
             </div>
-            <h3 className="font-semibold mb-2">100+ Languages</h3>
+            <h3 className="font-semibold mb-2">400+ Languages</h3>
             <p className="text-sm text-muted-foreground">
               Support for major world languages with regional variants
             </p>
