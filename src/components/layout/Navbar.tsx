@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 
 const navigation = [
   { name: 'Home', href: '/' },
+  { name: 'Vavus AI', href: '/vavus-ai' },
   { name: 'Translate', href: '/translate' },
   { name: 'AI Chat', href: '/ai' },
   { name: 'About', href: '/about' },

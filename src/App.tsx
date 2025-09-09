@@ -16,6 +16,8 @@ import Contact from "./pages/Contact";
 import Privacy from "./pages/Privacy";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
+import VavusAI from "./pages/VavusAI";
+
 
 const queryClient = new QueryClient();
 
@@ -35,6 +37,7 @@ const App = () => (
                 <Route path="/about" element={<About />} />
                 <Route path="/timeline" element={<Timeline />} />
                 <Route path="/business" element={<Business />} />
+                <Route path="/vavus-ai" element={<VavusAI />} />
                 <Route path="/join" element={<Join />} />
                 <Route path="/contact" element={<Contact />} />
                 <Route path="/privacy" element={<Privacy />} />
