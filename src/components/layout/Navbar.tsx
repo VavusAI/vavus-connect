@@ -13,6 +13,7 @@ const navigation = [
   { name: 'For Businesses', href: '/business' },
   { name: 'Join Us', href: '/join' },
   { name: 'Contact', href: '/contact' },
+  { name: 'Vavus Apps', href: '/vavus-apps' },
 ];
 
 export const Navbar = () => {

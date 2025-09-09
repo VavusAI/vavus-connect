@@ -46,6 +46,11 @@ export const Footer = () => {
                   For Business
                 </Link>
               </li>
+              <li>
+                <Link to="/vavus-apps" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  Vavus Apps
+                </Link>
+              </li>
             </ul>
           </div>
 
