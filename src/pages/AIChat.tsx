@@ -38,10 +38,13 @@ const AIChat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
-  // Pick the most recent conversation by default
+  // PATCH: gate the initial “pick latest conversation” to ONLY run once on mount,
+  // so clicking New chat (setActiveId(undefined)) doesn’t get auto-overwritten.
+  const pickedDefaultRef = useRef(false);
   useEffect(() => {
-    if (!activeId && convos.length > 0) {
+    if (!pickedDefaultRef.current && !activeId && convos.length > 0) {
       setActiveId(convos[0].id);
+      pickedDefaultRef.current = true;
     }
   }, [convos, activeId]);
 
@@ -58,7 +61,7 @@ const AIChat = () => {
       setInputMessage('');
 
       // Send to serverless API → saves user msg + assistant reply in Supabase
-      await sendChat({
+      const resp = await sendChat({
         conversationId: activeId,
         message: text,
         mode,
@@ -66,12 +69,17 @@ const AIChat = () => {
         useInternet,
         usePersona,
         useWorkspace,
-      } as any).then(async (resp: any) => {
-        // Set/keep the active conversation and refresh lists
-        const { conversationId } = resp || {};
+      } as any);
+
+      // PATCH: be resilient if API doesn’t return conversationId for some reason
+      const { conversationId } = resp || {};
+      if (conversationId) {
         setActiveId(conversationId);
         await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
-      });
+      } else {
+        await refreshConvos();
+        if (activeId) await refreshMsgs(activeId);
+      }
     } catch (e: any) {
       toast({
         title: 'Could not send',
@@ -117,7 +125,8 @@ const AIChat = () => {
                   onValueChange={(v) => setActiveId(v || undefined)}
               >
                 <SelectTrigger className="w-64">
-                  <SelectValue placeholder={convLoading ? 'Loading…' : 'Select conversation'} />
+                  {/* PATCH: clearer placeholder when starting a brand-new chat */}
+                  <SelectValue placeholder={convLoading ? 'Loading…' : (activeId ? 'Select conversation' : 'New conversation')} />
                 </SelectTrigger>
                 <SelectContent>
                   {convos.map((c: any) => (
