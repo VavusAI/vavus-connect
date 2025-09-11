@@ -17,14 +17,23 @@ type DbMessage = {
   created_at: string;
 };
 
+type Mode = 'normal' | 'thinking';
+
 const AIChat = () => {
   const { toast } = useToast();
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
+  // Toggles
+  const [mode, setMode] = useState<Mode>('normal');
+  const [longMode, setLongMode] = useState(false);
+  const [useInternet, setUseInternet] = useState(false);
+  const [usePersona, setUsePersona] = useState(false);
+  const [useWorkspace, setUseWorkspace] = useState(false);
+
   const { items: convos, loading: convLoading, refresh: refreshConvos } = useConversations();
-  const { items: msgs, loading: msgsLoading, refresh: refreshMsgs } = useMessages(activeId);
+  const { items: msgs, /* loading: msgsLoading */ refresh: refreshMsgs } = useMessages(activeId);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -49,11 +58,20 @@ const AIChat = () => {
       setInputMessage('');
 
       // Send to serverless API → saves user msg + assistant reply in Supabase
-      const { conversationId } = await sendChat({ conversationId: activeId, message: text });
-
-      // Set/keep the active conversation and refresh lists
-      setActiveId(conversationId);
-      await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
+      await sendChat({
+        conversationId: activeId,
+        message: text,
+        mode,
+        longMode,
+        useInternet,
+        usePersona,
+        useWorkspace,
+      } as any).then(async (resp: any) => {
+        // Set/keep the active conversation and refresh lists
+        const { conversationId } = resp || {};
+        setActiveId(conversationId);
+        await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
+      });
     } catch (e: any) {
       toast({
         title: 'Could not send',
@@ -107,7 +125,9 @@ const AIChat = () => {
                         {c.title || 'Untitled conversation'}
                       </SelectItem>
                   ))}
-                  {convos.length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">No conversations yet</div>}
+                  {convos.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">No conversations yet</div>
+                  )}
                 </SelectContent>
               </Select>
 
@@ -124,6 +144,79 @@ const AIChat = () => {
               <Lock className="h-4 w-4 mr-1" />
               Only you can see your conversations.
             </p>
+          </div>
+
+          {/* Controls Bar */}
+          <div className="mb-4 rounded-lg border bg-surface px-3 py-2 shadow-sm">
+            {/* Row 1: Mode + Long memory */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Mode</span>
+                <div className="inline-flex rounded-lg border p-0.5">
+                  <Button
+                      type="button"
+                      size="sm"
+                      variant={mode === 'normal' ? 'default' : 'ghost'}
+                      onClick={() => setMode('normal')}
+                      className={mode === 'normal' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}
+                  >
+                    Fast
+                  </Button>
+                  <Button
+                      type="button"
+                      size="sm"
+                      variant={mode === 'thinking' ? 'default' : 'ghost'}
+                      onClick={() => setMode('thinking')}
+                      className={mode === 'thinking' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}
+                  >
+                    Thinking
+                  </Button>
+                </div>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={longMode}
+                    onChange={(e) => setLongMode(e.target.checked)}
+                />
+                <span className="text-foreground">Long memory / Deep context</span>
+              </label>
+            </div>
+
+            {/* Row 2: Persona / Workspace / Internet */}
+            <div className="mt-2 flex flex-wrap items-center gap-4">
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={usePersona}
+                    onChange={(e) => setUsePersona(e.target.checked)}
+                />
+                <span className="text-foreground">Use my Persona</span>
+              </label>
+
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={useWorkspace}
+                    onChange={(e) => setUseWorkspace(e.target.checked)}
+                />
+                <span className="text-foreground">Use Workspace Memory</span>
+              </label>
+
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={useInternet}
+                    onChange={(e) => setUseInternet(e.target.checked)}
+                />
+                <span className="text-foreground">Use internet for this reply</span>
+              </label>
+            </div>
           </div>
 
           {/* Chat Interface */}
@@ -152,6 +245,7 @@ const AIChat = () => {
                     </div>
                 ))}
 
+                {/* typing dots */}
                 {isTyping && (
                     <div className="flex justify-start">
                       <div className="bg-surface border border-border p-3 rounded-lg">
@@ -163,6 +257,7 @@ const AIChat = () => {
                       </div>
                     </div>
                 )}
+
                 <div ref={messagesEndRef} />
               </div>
             </Card>
