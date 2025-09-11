@@ -91,7 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .from('conversations')
             .insert({ user_id: userId })
             // PATCH: select only columns guaranteed to exist in your schema
-            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled')
+            .select('id, summary, core_summary, extended_appendix, turns_count, last_summary_turn, last_core_turn, last_appendix_turn, long_mode_enabled')
             .single();
         if (error) return bad(res, 500, `DB error: ${error.message}`);
         conversationId = data.id;
@@ -111,12 +111,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }));
 
     // Conversation row (safe select)
-    let conv: any = { summary: '', turns_count: 0, last_summary_turn: 0, long_mode_enabled: false };
+    let conv: any = { summary: '', core_summary: '', extended_appendix: '', turns_count: 0, last_summary_turn: 0, last_core_turn: 0, last_appendix_turn: 0, long_mode_enabled: false };
     try {
         const { data, error } = await supabaseAdmin
             .from('conversations')
             // PATCH: remove non-existent columns from SELECT
-            .select('summary, turns_count, last_summary_turn, long_mode_enabled')
+            .select('summary, core_summary, extended_appendix, turns_count, last_summary_turn, last_core_turn, last_appendix_turn, long_mode_enabled')
             .eq('id', conversationId)
             .single();
         if (!error && data) conv = data;
@@ -282,9 +282,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // Summary refresh cadence (best-effort)
         const doShort = turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY;
 
-        // PATCH: if your schema doesn’t have core/appendix columns, these stay false
-        const doCore  = false && longModeEnabled && turnsNext - Number((conv as any).last_core_turn || 0) >= CORE_REFRESH_EVERY;
-        const doAppx  = false && longModeEnabled && turnsNext - Number((conv as any).last_appendix_turn || 0) >= APPENDIX_REFRESH_EVERY;
+        const doCore  = longModeEnabled && turnsNext - Number((conv as any).last_core_turn || 0) >= CORE_REFRESH_EVERY;
+        const doAppx  = longModeEnabled && turnsNext - Number((conv as any).last_appendix_turn || 0) >= APPENDIX_REFRESH_EVERY;
 
         const updates: Record<string, any> = {
             turns_count: turnsNext,
@@ -312,9 +311,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }
             }
 
-            // NOTE: doCore/doAppx disabled on schemas without those columns.
-            // If you later add them, switch the two flags above to real conditions and
-            // add updates.core_summary / updates.extended_appendix / last_core_turn / last_appendix_turn.
+            if (doCore) {
+                const coreMsgs: Msg[] = [
+                    { role: 'system', content:
+                            'Summarize enduring goals, decisions, and key facts into a concise core summary. Use short bullets; no quotes.' },
+                    ...history.slice(-24),
+                    { role: 'user', content: 'Update the core summary now.' }
+                ];
+                const c = await callRunpod({
+                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
+                    input: { task: 'chat-completions', model: DEFAULT_MODEL, messages: coreMsgs, temperature: 0.1, max_tokens: 1000 },
+                    timeoutMs: RUNPOD_CHAT_TIMEOUT,
+                });
+                const newCore = norm(c?.output?.text ?? c?.output?.choices?.[0]?.message?.content ?? '');
+                if (newCore) {
+                    updates.core_summary = newCore.slice(0, 12000);
+                    updates.last_core_turn = turnsNext;
+                }
+            }
+
+            if (doAppx) {
+                const appxMsgs: Msg[] = [
+                    { role: 'system', content:
+                            'Capture detailed context, background facts, or ancillary info in an extended appendix. Use bullets when possible; no quotes.' },
+                    ...history.slice(-40),
+                    { role: 'user', content: 'Update the extended appendix now.' }
+                ];
+                const a = await callRunpod({
+                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
+                    input: { task: 'chat-completions', model: DEFAULT_MODEL, messages: appxMsgs, temperature: 0.1, max_tokens: 1500 },
+                    timeoutMs: RUNPOD_CHAT_TIMEOUT,
+                });
+                const newAppx = norm(a?.output?.text ?? a?.output?.choices?.[0]?.message?.content ?? '');
+                if (newAppx) {
+                    updates.extended_appendix = newAppx.slice(0, 16000);
+                    updates.last_appendix_turn = turnsNext;
+                }
+            }
         } catch {}
 
         try { await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId); } catch {}
