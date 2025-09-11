@@ -1,3 +1,4 @@
+// _utils/auth.ts
 import jwt, { JwtPayload } from 'jsonwebtoken';
 
 export function requireUser(req: any) {
@@ -15,3 +16,6 @@ export function requireUser(req: any) {
 
     return { userId, token };
 }
+
+// alias so chat.ts compiles
+export const getUserFromReq = requireUser;

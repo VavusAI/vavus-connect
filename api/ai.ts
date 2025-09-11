@@ -1,71 +1,133 @@
-import { supabaseAdmin } from './_utils/supabaseAdmin';
-import { requireUser } from './_utils/auth';
+// /api/ai.ts
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { callRunpod, bad, allowCORS } from './_runpod.js';
+import { supabaseAdmin } from './_utils/supabaseAdmin.js';
+import { requireUser } from './_utils/auth.js';
 
-export default async function handler(req: any, res: any) {
-    try {
-        if (req.method !== 'POST') {
-            res.statusCode = 405;
-            res.end();
-            return;
-        }
+const MAX_TURNS = 16;
+const MAX_TOKENS = 1024;
 
-        const { userId } = requireUser(req);
-        const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-        const { conversationId, message, model = 'glm-4.5-air' } = body;
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+    allowCORS(res);
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return bad(res, 405, 'Use POST');
 
-        if (!message || typeof message !== 'string') {
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: 'message required' }));
-            return;
-        }
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    let { conversationId, message, temperature = 0.3, system } = body as {
+        conversationId?: string;
+        message?: string;
+        temperature?: number;
+        system?: string;
+    };
 
-        // create conversation if missing
-        let convId = conversationId;
-        if (!convId) {
-            const title = message.slice(0, 60);
-            const { data, error } = await supabaseAdmin
-                .from('conversations')
-                .insert({ user_id: userId, title, model })
-                .select('id')
-                .single();
-            if (error) throw error;
-            convId = data.id;
-        }
+    if (!message) return bad(res, 400, 'message required');
 
-        // save user message
-        const { error: umErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: convId,
-            user_id: userId,
-            role: 'user',
-            content: message,
-        });
-        if (umErr) throw umErr;
+    // Optional auth (allow anonymous)
+    let userId: string | null = null;
+    try { userId = requireUser(req).userId; } catch {}
 
-        // TODO: call your real AI endpoint here
-        const assistantText = `Echo: ${message}`;
-
-        // save assistant message
-        const { error: amErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: convId,
-            user_id: userId,
-            role: 'assistant',
-            content: assistantText,
-        });
-        if (amErr) throw amErr;
-
-        // update conversation timestamp
-        await supabaseAdmin
+    // Create conversation lazily if missing
+    if (!conversationId) {
+        const { data, error } = await supabaseAdmin
             .from('conversations')
-            .update({ updated_at: new Date().toISOString() })
-            .eq('id', convId);
+            .insert({ user_id: userId })
+            .select('id')
+            .single();
+        if (error) return bad(res, 500, `DB error: ${error.message}`);
+        conversationId = data.id;
+    }
 
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ conversationId: convId, reply: assistantText }));
+    // Load prior messages for context
+    const { data: prior, error: histErr } = await supabaseAdmin
+        .from('messages')
+        .select('role, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true });
+
+    if (histErr) return bad(res, 500, `DB error: ${histErr.message}`);
+
+    const history =
+        (prior || []).map(m => ({
+            role: m.role as 'system' | 'user' | 'assistant',
+            content: m.content as string,
+        })) ?? [];
+
+    if (system) {
+        history.unshift({ role: 'system', content: system });
+    }
+
+    const messages = [
+        ...history.slice(-MAX_TURNS),
+        { role: 'user' as const, content: message },
+    ];
+
+    // ==== STUB FALLBACK (no Runpod configured) ====
+    const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL;
+    const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN;
+    const RUNPOD_CHAT_TIMEOUT = Number(process.env.RUNPOD_CHAT_TIMEOUT || 90000);
+
+    if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
+        const assistantText = `(stub) ${message}`;
+
+        // Store both turns (so your DB behaves normally in dev)
+        const { error: umErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'user', content: message,
+        });
+        if (umErr) return bad(res, 500, umErr.message);
+
+        const { error: amErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'assistant', content: assistantText,
+        });
+        if (amErr) return bad(res, 500, amErr.message);
+
+        await supabaseAdmin.from('conversations')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', conversationId);
+
+        return res.status(200).json({ conversationId, reply: assistantText, raw: { stub: true } });
+    }
+    // ==============================================
+
+    // Real Runpod call
+    const input = {
+        task: 'chat-completions',
+        model: 'glm-4.5-air',
+        messages,
+        temperature,
+        max_tokens: MAX_TOKENS,
+    };
+
+    try {
+        const data = await callRunpod({
+            url: RUNPOD_CHAT_URL!,
+            token: RUNPOD_CHAT_TOKEN!,
+            input,
+            timeoutMs: RUNPOD_CHAT_TIMEOUT,
+        });
+
+        const assistantText =
+            data?.output?.text ??
+            data?.output?.choices?.[0]?.message?.content ??
+            data?.output?.choices?.[0]?.text ??
+            data?.text ?? '';
+
+        // Store both turns
+        const { error: umErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'user', content: message,
+        });
+        if (umErr) return bad(res, 500, umErr.message);
+
+        const { error: amErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'assistant', content: assistantText,
+        });
+        if (amErr) return bad(res, 500, amErr.message);
+
+        await supabaseAdmin.from('conversations')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', conversationId);
+
+        return res.status(200).json({ conversationId, reply: assistantText, raw: data });
     } catch (e: any) {
-        res.statusCode = 401;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: e?.message ?? 'Unauthorized' }));
+        return bad(res, 502, e?.message || 'Upstream chat error');
     }
 }
