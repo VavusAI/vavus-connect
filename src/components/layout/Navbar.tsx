@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X, Zap, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useSession } from "@/hooks/useSession";
+import { supabase } from "@/lib/supabase";
 
 const AI_ITEMS = [
   { name: 'Vavus AI', href: '/vavus-ai' },
@@ -20,6 +22,7 @@ const WHO_ITEMS = [
 export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
+  const { session } = useSession();
 
   const isActivePath = (path: string) => {
     if (path === '/' && location.pathname === '/') return true;
@@ -56,24 +59,32 @@ export const Navbar = () => {
                 <div className="relative group">
                   <button
                       className={`nav-link whitespace-nowrap flex items-center gap-1 ${isGroupActive(AI_ITEMS) ? 'active' : ''}`}
+                      aria-haspopup="menu"
                   >
                     AI <ChevronDown className="h-4 w-4 opacity-70 transition group-hover:rotate-180" />
                   </button>
+
+                  {/* Hover-safe dropdown (padding creates the gap inside the container) */}
                   <div
-                      className="invisible opacity-0 group-hover:visible group-hover:opacity-100 transition
-                             absolute left-0 top-full mt-3 w-56 rounded-xl border bg-white shadow-lg p-2"
+                      className="
+                    absolute left-0 top-full pt-3
+                    opacity-0 invisible group-hover:opacity-100 group-hover:visible
+                    transition z-50
+                  "
                   >
-                    {AI_ITEMS.map((item) => (
-                        <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`block rounded-md px-3 py-2 text-sm text-foreground/80 hover:text-foreground hover:bg-surface ${
-                                isActivePath(item.href) ? 'bg-primary-light text-primary' : ''
-                            }`}
-                        >
-                          {item.name}
-                        </Link>
-                    ))}
+                    <div className="w-56 rounded-xl border bg-white shadow-lg p-2">
+                      {AI_ITEMS.map((item) => (
+                          <Link
+                              key={item.name}
+                              to={item.href}
+                              className={`block rounded-md px-3 py-2 text-sm text-foreground/80 hover:text-foreground hover:bg-surface ${
+                                  isActivePath(item.href) ? 'bg-primary-light text-primary' : ''
+                              }`}
+                          >
+                            {item.name}
+                          </Link>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -81,24 +92,32 @@ export const Navbar = () => {
                 <div className="relative group">
                   <button
                       className={`nav-link whitespace-nowrap flex items-center gap-1 ${isGroupActive(WHO_ITEMS) ? 'active' : ''}`}
+                      aria-haspopup="menu"
                   >
                     Who we are <ChevronDown className="h-4 w-4 opacity-70 transition group-hover:rotate-180" />
                   </button>
+
+                  {/* Hover-safe dropdown */}
                   <div
-                      className="invisible opacity-0 group-hover:visible group-hover:opacity-100 transition
-                             absolute left-0 top-full mt-3 w-56 rounded-xl border bg-white shadow-lg p-2"
+                      className="
+                    absolute left-0 top-full pt-3
+                    opacity-0 invisible group-hover:opacity-100 group-hover:visible
+                    transition z-50
+                  "
                   >
-                    {WHO_ITEMS.map((item) => (
-                        <Link
-                            key={item.name}
-                            to={item.href}
-                            className={`block rounded-md px-3 py-2 text-sm text-foreground/80 hover:text-foreground hover:bg-surface ${
-                                isActivePath(item.href) ? 'bg-primary-light text-primary' : ''
-                            }`}
-                        >
-                          {item.name}
-                        </Link>
-                    ))}
+                    <div className="w-56 rounded-xl border bg-white shadow-lg p-2">
+                      {WHO_ITEMS.map((item) => (
+                          <Link
+                              key={item.name}
+                              to={item.href}
+                              className={`block rounded-md px-3 py-2 text-sm text-foreground/80 hover:text-foreground hover:bg-surface ${
+                                  isActivePath(item.href) ? 'bg-primary-light text-primary' : ''
+                              }`}
+                          >
+                            {item.name}
+                          </Link>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -112,11 +131,22 @@ export const Navbar = () => {
               </div>
             </div>
 
-            {/* Desktop CTA */}
-            <div className="hidden md:block">
-              <Link to="/login">
-                <Button className="btn-hero whitespace-nowrap">Login / Account</Button>
-              </Link>
+            {/* Desktop CTA (session-aware) */}
+            <div className="hidden md:flex items-center gap-x-3">
+              {session ? (
+                  <>
+                    <Link to="/account">
+                      <Button className="btn-hero whitespace-nowrap">Account</Button>
+                    </Link>
+                    <Button variant="outline" onClick={() => supabase.auth.signOut()}>
+                      Sign out
+                    </Button>
+                  </>
+              ) : (
+                  <Link to="/auth">
+                    <Button className="btn-hero whitespace-nowrap">Login / Create account</Button>
+                  </Link>
+              )}
             </div>
 
             {/* Mobile menu button */}
@@ -202,11 +232,29 @@ export const Navbar = () => {
                   For Businesses
                 </Link>
 
-                {/* CTA */}
+                {/* CTA (session-aware) */}
                 <div className="pt-4 pb-2">
-                  <Link to="/login" onClick={() => setMobileMenuOpen(false)}>
-                    <Button className="btn-hero w-full">Login / Account</Button>
-                  </Link>
+                  {session ? (
+                      <>
+                        <Link to="/account" onClick={() => setMobileMenuOpen(false)}>
+                          <Button className="btn-hero w-full">Account</Button>
+                        </Link>
+                        <Button
+                            variant="outline"
+                            className="w-full mt-2"
+                            onClick={() => {
+                              setMobileMenuOpen(false);
+                              supabase.auth.signOut();
+                            }}
+                        >
+                          Sign out
+                        </Button>
+                      </>
+                  ) : (
+                      <Link to="/auth" onClick={() => setMobileMenuOpen(false)}>
+                        <Button className="btn-hero w-full">Login / Create account</Button>
+                      </Link>
+                  )}
                 </div>
               </div>
             </div>

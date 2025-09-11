@@ -18,6 +18,10 @@ import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import VavusAI from "./pages/VavusAI";
 import VavusApps from "./pages/VavusApps";
+import AuthPage from "./pages/AuthPage";
+import AccountPage from "./pages/AccountPage";
+import ProtectedRoute from "@/components/ProtectedRoute";
+
 
 
 const queryClient = new QueryClient();
@@ -43,9 +47,24 @@ const App = () => (
                 <Route path="/join" element={<Join />} />
                 <Route path="/contact" element={<Contact />} />
                 <Route path="/privacy" element={<Privacy />} />
-                <Route path="/login" element={<Login />} />
+
+                {/* Auth pages */}
+                <Route path="/auth" element={<AuthPage />} />
+                <Route
+                    path="/account"
+                    element={
+                      <ProtectedRoute>
+                        <AccountPage />
+                      </ProtectedRoute>
+                    }
+                />
+
+                {/* Optional: keep old /login path but redirect to /auth */}
+                <Route path="/login" element={<AuthPage />} />
+
                 <Route path="*" element={<NotFound />} />
               </Routes>
+
             </main>
             <Footer />
           </div>

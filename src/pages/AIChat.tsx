@@ -1,235 +1,250 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, MessageSquare, Lock, Upload, FileText, Download } from 'lucide-react';
+import { Send, MessageSquare, Lock, Upload, FileText, Download, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 
-interface Message {
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useConversations } from '@/hooks/useConversations';
+import { useMessages } from '@/hooks/useMessages';
+import { sendChat } from '@/lib/api';
+
+type DbMessage = {
   id: string;
+  role: 'system' | 'user' | 'assistant';
   content: string;
-  sender: 'user' | 'ai';
-  timestamp: Date;
-}
+  created_at: string;
+};
 
 const AIChat = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      content: 'Hello! This is a limited demo of VAVUS AI Chat. Full features including conversation history, file uploads, OCR, and export will be available after login with a VAVUS device. How can I help you today?',
-      sender: 'ai',
-      timestamp: new Date()
-    }
-  ]);
+  const { toast } = useToast();
+  const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { toast } = useToast();
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const { items: convos, loading: convLoading, refresh: refreshConvos } = useConversations();
+  const { items: msgs, loading: msgsLoading, refresh: refreshMsgs } = useMessages(activeId);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+
+  // Pick the most recent conversation by default
+  useEffect(() => {
+    if (!activeId && convos.length > 0) {
+      setActiveId(convos[0].id);
+    }
+  }, [convos, activeId]);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [msgs, isTyping]);
 
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
+  async function handleSendMessage() {
+    const text = inputMessage.trim();
+    if (!text) return;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      content: inputMessage,
-      sender: 'user',
-      timestamp: new Date()
-    };
+    try {
+      setIsTyping(true);
+      setInputMessage('');
 
-    setMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
-    setIsTyping(true);
+      // Send to serverless API → saves user msg + assistant reply in Supabase
+      const { conversationId } = await sendChat({ conversationId: activeId, message: text });
 
-    // Simulate AI response
-    setTimeout(() => {
-      const aiMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: `Thanks for your message! In the full version, I would provide a comprehensive AI-powered response with access to advanced features like document analysis, translation, and more. This demo shows basic chat functionality only.`,
-        sender: 'ai',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, aiMessage]);
+      // Set/keep the active conversation and refresh lists
+      setActiveId(conversationId);
+      await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
+    } catch (e: any) {
+      toast({
+        title: 'Could not send',
+        description: typeof e?.message === 'string' ? e.message : 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
       setIsTyping(false);
-    }, 1500);
-  };
+      scrollToBottom();
+    }
+  }
 
-  const handleFeatureClick = (feature: string) => {
+  function startNewConversation() {
+    setActiveId(undefined);
+    // messages hook will return empty until first send creates a conversation
+  }
+
+  function handleFeatureClick(name: string) {
     toast({
-      title: "Feature Locked",
-      description: `${feature} requires login + VAVUS device after launch.`,
-      action: (
-        <Button 
-          variant="outline" 
-          size="sm"
-          onClick={() => window.location.href = '/login'}
-        >
-          Login
-        </Button>
-      )
+      title: `${name} coming soon`,
+      description: 'We’ll enable uploads, OCR and export shortly.',
     });
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-subtle">
-      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="mb-4">
-            <span className="gradient-text">AI Chat Assistant</span>
-          </h1>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Experience intelligent conversation with context-aware AI powered by VAVUS technology.
-          </p>
-          
-          {/* Demo Notice */}
-          <div className="mt-6 p-4 bg-accent-brand-light border border-accent-brand/20 rounded-lg max-w-lg mx-auto">
-            <p className="text-sm text-accent-brand font-medium flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-subtle">
+        <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+          {/* Header */}
+          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="text-left">
+              <h1 className="mb-1">
+                <span className="gradient-text">AI Chat Assistant</span>
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Your conversations are saved privately to your account.
+              </p>
+            </div>
+
+            {/* Conversation picker */}
+            <div className="flex items-center gap-2">
+              <Select
+                  value={activeId ?? ''}
+                  onValueChange={(v) => setActiveId(v || undefined)}
+              >
+                <SelectTrigger className="w-64">
+                  <SelectValue placeholder={convLoading ? 'Loading…' : 'Select conversation'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {convos.map((c: any) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.title || 'Untitled conversation'}
+                      </SelectItem>
+                  ))}
+                  {convos.length === 0 && <div className="px-3 py-2 text-sm text-muted-foreground">No conversations yet</div>}
+                </SelectContent>
+              </Select>
+
+              <Button variant="outline" onClick={startNewConversation}>
+                <Plus className="h-4 w-4 mr-1" />
+                New chat
+              </Button>
+            </div>
+          </div>
+
+          {/* Demo/Info Notice */}
+          <div className="mb-6 p-3 bg-accent-brand-light border border-accent-brand/20 rounded-lg text-center">
+            <p className="text-sm text-accent-brand font-medium inline-flex items-center">
               <Lock className="h-4 w-4 mr-1" />
-              Limited Demo - Full features require login + device
+              Only you can see your conversations.
             </p>
           </div>
-        </div>
 
-        {/* Chat Interface */}
-        <div className="flex flex-col h-[600px]">
-          {/* Chat Messages */}
-          <Card className="flex-1 p-4 mb-4 overflow-hidden">
-            <div className="h-full overflow-y-auto space-y-4">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] p-3 rounded-lg ${
-                      message.sender === 'user'
-                        ? 'bg-gradient-hero text-white'
-                        : 'bg-surface text-foreground border border-border'
-                    }`}
-                  >
-                    <p className="text-sm">{message.content}</p>
-                    <p className={`text-xs mt-1 ${
-                      message.sender === 'user' ? 'text-white/70' : 'text-muted-foreground'
-                    }`}>
-                      {message.timestamp.toLocaleTimeString([], { 
-                        hour: '2-digit', 
-                        minute: '2-digit' 
-                      })}
-                    </p>
-                  </div>
-                </div>
-              ))}
-              
-              {isTyping && (
-                <div className="flex justify-start">
-                  <div className="bg-surface border border-border p-3 rounded-lg">
-                    <div className="flex space-x-1">
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+          {/* Chat Interface */}
+          <div className="flex flex-col h-[600px]">
+            {/* Chat Messages */}
+            <Card className="flex-1 p-4 mb-4 overflow-hidden">
+              <div className="h-full overflow-y-auto space-y-4">
+                {msgs.map((m: DbMessage) => (
+                    <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div
+                          className={`max-w-[80%] p-3 rounded-lg ${
+                              m.role === 'user'
+                                  ? 'bg-gradient-hero text-white'
+                                  : 'bg-surface text-foreground border border-border'
+                          }`}
+                      >
+                        <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                        <p
+                            className={`text-xs mt-1 ${
+                                m.role === 'user' ? 'text-white/70' : 'text-muted-foreground'
+                            }`}
+                        >
+                          {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          </Card>
+                ))}
 
-          {/* Input Area */}
-          <div className="space-y-4">
-            {/* Disabled Features */}
-            <div className="flex space-x-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="opacity-60 cursor-not-allowed"
-                onClick={() => handleFeatureClick('File Upload')}
-              >
-                <Upload className="h-4 w-4 mr-1" />
-                Upload
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="opacity-60 cursor-not-allowed"
-                onClick={() => handleFeatureClick('OCR')}
-              >
-                <FileText className="h-4 w-4 mr-1" />
-                OCR
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="opacity-60 cursor-not-allowed"
-                onClick={() => handleFeatureClick('Export Chat')}
-              >
-                <Download className="h-4 w-4 mr-1" />
-                Export
-              </Button>
-            </div>
+                {isTyping && (
+                    <div className="flex justify-start">
+                      <div className="bg-surface border border-border p-3 rounded-lg">
+                        <div className="flex space-x-1">
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"></div>
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                          <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        </div>
+                      </div>
+                    </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            </Card>
 
-            {/* Message Input */}
-            <div className="flex space-x-2">
-              <Input
-                placeholder="Type your message..."
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                className="flex-1 focus-ring"
-              />
-              <Button
-                onClick={handleSendMessage}
-                disabled={!inputMessage.trim() || isTyping}
-                className="btn-hero"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
+            {/* Input Area */}
+            <div className="space-y-4">
+              {/* Pending Features */}
+              <div className="flex space-x-2">
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleFeatureClick('File Upload')}
+                >
+                  <Upload className="h-4 w-4 mr-1" />
+                  Upload
+                </Button>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleFeatureClick('OCR')}
+                >
+                  <FileText className="h-4 w-4 mr-1" />
+                  OCR
+                </Button>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleFeatureClick('Export Chat')}
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Export
+                </Button>
+              </div>
+
+              {/* Message Input */}
+              <div className="flex space-x-2">
+                <Input
+                    placeholder="Type your message…"
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
+                    className="flex-1 focus-ring"
+                />
+                <Button
+                    onClick={handleSendMessage}
+                    disabled={!inputMessage.trim() || isTyping}
+                    className="btn-hero"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Feature Preview */}
-        <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="text-center p-6 bg-white rounded-lg border border-border">
-            <div className="bg-primary-light p-3 rounded-lg w-fit mx-auto mb-4">
-              <MessageSquare className="h-6 w-6 text-primary" />
+          {/* Feature Preview */}
+          <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="text-center p-6 bg-white rounded-lg border border-border">
+              <div className="bg-primary-light p-3 rounded-lg w-fit mx-auto mb-4">
+                <MessageSquare className="h-6 w-6 text-primary" />
+              </div>
+              <h3 className="font-semibold mb-2">Multi-turn Conversations</h3>
+              <p className="text-sm text-muted-foreground">Maintain context across long conversations</p>
             </div>
-            <h3 className="font-semibold mb-2">Multi-turn Conversations</h3>
-            <p className="text-sm text-muted-foreground">
-              Maintain context across long conversations
-            </p>
-          </div>
-          
-          <div className="text-center p-6 bg-white rounded-lg border border-border">
-            <div className="bg-accent-brand-light p-3 rounded-lg w-fit mx-auto mb-4">
-              <FileText className="h-6 w-6 text-accent-brand" />
+
+            <div className="text-center p-6 bg-white rounded-lg border border-border">
+              <div className="bg-accent-brand-light p-3 rounded-lg w-fit mx-auto mb-4">
+                <FileText className="h-6 w-6 text-accent-brand" />
+              </div>
+              <h3 className="font-semibold mb-2">Document Analysis</h3>
+              <p className="text-sm text-muted-foreground">Upload and analyze documents with AI</p>
             </div>
-            <h3 className="font-semibold mb-2">Document Analysis</h3>
-            <p className="text-sm text-muted-foreground">
-              Upload and analyze documents with AI
-            </p>
-          </div>
-          
-          <div className="text-center p-6 bg-white rounded-lg border border-border">
-            <div className="bg-success/20 p-3 rounded-lg w-fit mx-auto mb-4">
-              <Lock className="h-6 w-6 text-success" />
+
+            <div className="text-center p-6 bg-white rounded-lg border border-border">
+              <div className="bg-success/20 p-3 rounded-lg w-fit mx-auto mb-4">
+                <Lock className="h-6 w-6 text-success" />
+              </div>
+              <h3 className="font-semibold mb-2">Private & Secure</h3>
+              <p className="text-sm text-muted-foreground">All conversations encrypted and private</p>
             </div>
-            <h3 className="font-semibold mb-2">Private & Secure</h3>
-            <p className="text-sm text-muted-foreground">
-              All conversations encrypted and private
-            </p>
           </div>
         </div>
       </div>
-    </div>
   );
 };
 

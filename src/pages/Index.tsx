@@ -4,70 +4,133 @@ import {
   ArrowRight,
   Globe,
   MessageSquare,
-  Shield,
-  Zap,
-  Check,
   Smartphone,
   Lock,
   Cloud,
-  Users
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SubscribeModal } from '@/components/ui/subscribe-modal';
 import DeviceShowcase from '../components/DeviceShowcase';
 
+import { supabase } from '@/lib/supabase';
+import { useSession } from '@/hooks/useSession';
+
 const Index: React.FC = () => {
   const [email, setEmail] = useState('');
   const [showSubscribeModal, setShowSubscribeModal] = useState(false);
 
-  // Show subscribe modal on exit intent (simplified)
+  // subscribe form status
+  const [subStatus, setSubStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [subMsg, setSubMsg] = useState('');
+  const { session } = useSession();
+
+  // Track if this browser has already subscribed
+  const [hasSubscribed, setHasSubscribed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('vavus_subscribed') === '1';
+  });
+
+  // Exit-intent popup – only if NOT subscribed and NOT logged in
   useEffect(() => {
+    if (typeof window === 'undefined' || hasSubscribed || session) return;
+
     const handleMouseLeave = (e: MouseEvent) => {
-      if (e.clientY <= 0) {
+      if (e.clientY <= 0 && !hasSubscribed && !session) {
         setShowSubscribeModal(true);
       }
     };
 
-    const timer = setTimeout(() => {
+    const timer = window.setTimeout(() => {
       document.addEventListener('mouseleave', handleMouseLeave);
     }, 10000); // Show after 10 seconds
 
     return () => {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       document.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, []);
+  }, [hasSubscribed, session]);
 
   const features = [
     {
       icon: Globe,
       title: 'Universal Translation',
-      description: 'Translate between 400+ languages with AI-powered accuracy and context awareness.'
+      description:
+          'Translate between 400+ languages with AI-powered accuracy and context awareness.',
     },
     {
       icon: Smartphone,
       title: 'Device Integration',
-      description: 'Seamless sync across all your devices with our dedicated hardware ecosystem.'
+      description:
+          'Seamless sync across all your devices with our dedicated hardware ecosystem.',
     },
     {
       icon: Lock,
       title: 'Privacy First',
-      description: 'End-to-end encryption ensures your conversations and data remain completely private.'
+      description:
+          'End-to-end encryption ensures your conversations and data remain completely private.',
     },
     {
       icon: Cloud,
       title: 'Offline Capable',
-      description: 'Core features work offline, syncing automatically when connected.'
-    }
+      description:
+          'Core features work offline, syncing automatically when connected.',
+    },
   ];
 
-  const socialProofLogos = [
-    'TechCorp',
-    'GlobalCom',
-    'InnovateLab',
-    'FutureSync'
-  ];
+  const socialProofLogos = ['TechCorp', 'GlobalCom', 'InnovateLab', 'FutureSync'];
+
+  function isEmail(v: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  }
+
+  async function handleSubscribe(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const value = email.trim().toLowerCase();
+
+    if (!isEmail(value)) {
+      setSubStatus('error');
+      setSubMsg('Please enter a valid email.');
+      return;
+    }
+
+    setSubStatus('loading');
+    setSubMsg('');
+
+    try {
+      const page = window.location.pathname;
+      const utm = window.location.search.slice(1);
+
+      const { error } = await supabase
+          .from('subscriptions')
+          .upsert(
+              {
+                email: value,
+                user_id: session?.user?.id ?? null,
+                page,
+                utm,
+              },
+              { onConflict: 'email' }
+          );
+
+      if (error) throw error;
+
+      // Mark as subscribed on this browser, hide popup
+      localStorage.setItem('vavus_subscribed', '1');
+      setHasSubscribed(true);
+      setShowSubscribeModal(false);
+
+      setSubStatus('ok');
+      setSubMsg('You’re in! We’ll keep you posted.');
+      setEmail('');
+    } catch (err) {
+      setSubStatus('error');
+      setSubMsg('Something went wrong. Please try again.');
+    } finally {
+      // fade the message out after a moment (optional)
+      setTimeout(() => setSubStatus('idle'), 4000);
+    }
+  }
 
   return (
       <div className="relative">
@@ -140,9 +203,7 @@ const Index: React.FC = () => {
                     <h3 className="text-lg font-semibold mb-2 text-foreground">
                       {feature.title}
                     </h3>
-                    <p className="text-muted-foreground">
-                      {feature.description}
-                    </p>
+                    <p className="text-muted-foreground">{feature.description}</p>
                   </div>
               ))}
             </div>
@@ -174,29 +235,50 @@ const Index: React.FC = () => {
                 Get early access, product updates, and launch notifications delivered to your inbox.
               </p>
 
-              <form className="flex flex-col sm:flex-row gap-4 max-w-md mx-auto">
+              <form
+                  className="flex flex-col sm:flex-row gap-4 max-w-md mx-auto"
+                  onSubmit={handleSubscribe}
+              >
                 <Input
                     type="email"
                     placeholder="Enter your email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="bg-white/20 border-white/30 text-white placeholder:text-white/70 focus:border-white"
+                    disabled={subStatus === 'loading'}
+                    required
                 />
                 <Button
                     type="submit"
                     className="bg-white text-primary hover:bg-white/90 font-semibold px-8"
+                    disabled={subStatus === 'loading'}
                 >
-                  Subscribe
+                  {subStatus === 'loading' ? 'Subscribing…' : 'Subscribe'}
                 </Button>
               </form>
+
+              {subMsg && (
+                  <p
+                      className={`mt-3 text-sm ${
+                          subStatus === 'error' ? 'text-red-200' : 'text-emerald-200'
+                      }`}
+                  >
+                    {subMsg}
+                  </p>
+              )}
             </div>
           </div>
         </section>
 
-        {/* Subscribe Modal */}
+        {/* Subscribe Modal (won't render once subscribed or when logged in) */}
         <SubscribeModal
-            isOpen={showSubscribeModal}
+            isOpen={showSubscribeModal && !hasSubscribed && !session}
             onClose={() => setShowSubscribeModal(false)}
+            onSubscribed={() => {
+              localStorage.setItem('vavus_subscribed', '1');
+              setHasSubscribed(true);
+              setShowSubscribeModal(false);
+            }}
         />
       </div>
   );
