@@ -11,11 +11,15 @@ const THINK_MAX_TOKENS = 2048;
 const WINDOW_TURNS_FAST = 8;
 const WINDOW_TURNS_LONG = 12;
 const SUMMARY_REFRESH_EVERY = 8;
-const CORE_REFRESH_EVERY = 10;
-const APPENDIX_REFRESH_EVERY = 18;
+const CORE_REFRESH_EVERY = 10;         // will be inert if core columns don’t exist
+const APPENDIX_REFRESH_EVERY = 18;     // will be inert if appendix columns don’t exist
 
 const SEARXNG_URL = process.env.SEARXNG_URL;          // e.g. http://127.0.0.1:8080
 const SEARXNG_TIMEOUT_MS = 8000;
+
+// PATCH: allow overriding model from env, default to your running one
+const DEFAULT_MODEL =
+    process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
 
 const norm = (s?: string | null) => (s ?? '').trim().replace(/\s+/g, ' ');
 const bullets = (arr: string[], cap = 5) => arr.filter(Boolean).slice(0, cap).map(s => `- ${s}`).join('\n');
@@ -86,7 +90,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const { data, error } = await supabaseAdmin
             .from('conversations')
             .insert({ user_id: userId })
-            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled, core_summary, extended_appendix, last_core_turn, last_appendix_turn')
+            // PATCH: select only columns guaranteed to exist in your schema
+            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled')
             .single();
         if (error) return bad(res, 500, `DB error: ${error.message}`);
         conversationId = data.id;
@@ -105,12 +110,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         content: String(m.content ?? ''),
     }));
 
-    // Conversation row
+    // Conversation row (safe select)
     let conv: any = { summary: '', turns_count: 0, last_summary_turn: 0, long_mode_enabled: false };
     try {
         const { data, error } = await supabaseAdmin
             .from('conversations')
-            .select('summary, turns_count, last_summary_turn, long_mode_enabled, core_summary, extended_appendix, last_core_turn, last_appendix_turn')
+            // PATCH: remove non-existent columns from SELECT
+            .select('summary, turns_count, last_summary_turn, long_mode_enabled')
             .eq('id', conversationId)
             .single();
         if (!error && data) conv = data;
@@ -156,9 +162,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         signalBullets.push(...shortSummary.split(/[\n•\-]+/).map(norm).filter(Boolean).slice(0, 2));
     }
 
-    // Long-memory blocks
-    const coreSummary = norm(conv.core_summary);
-    const appendix = norm(conv.extended_appendix);
+    // Long-memory blocks (safe: these columns may not exist)
+    const coreSummary = norm((conv as any).core_summary);
+    const appendix = norm((conv as any).extended_appendix);
 
     // Build prompt
     const msgs: Msg[] = [];
@@ -240,7 +246,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Real Runpod call
     const input = {
         task: 'chat-completions',
-        model: 'glm-4.5-air',
+        // PATCH: use env/default model to match your running pod
+        model: DEFAULT_MODEL,
         session_id: conversationId, // helps server-side KV reuse
         messages: msgs,
         temperature: modelTemp,
@@ -274,8 +281,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         // Summary refresh cadence (best-effort)
         const doShort = turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY;
-        const doCore  = longModeEnabled && turnsNext - Number(conv.last_core_turn || 0) >= CORE_REFRESH_EVERY;
-        const doAppx  = longModeEnabled && turnsNext - Number(conv.last_appendix_turn || 0) >= APPENDIX_REFRESH_EVERY;
+
+        // PATCH: if your schema doesn’t have core/appendix columns, these stay false
+        const doCore  = false && longModeEnabled && turnsNext - Number((conv as any).last_core_turn || 0) >= CORE_REFRESH_EVERY;
+        const doAppx  = false && longModeEnabled && turnsNext - Number((conv as any).last_appendix_turn || 0) >= APPENDIX_REFRESH_EVERY;
 
         const updates: Record<string, any> = {
             turns_count: turnsNext,
@@ -293,7 +302,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 ];
                 const s = await callRunpod({
                     url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    input: { task: 'chat-completions', model: 'glm-4.5-air', messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
+                    input: { task: 'chat-completions', model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
                     timeoutMs: RUNPOD_CHAT_TIMEOUT,
                 });
                 const newSummary = norm(s?.output?.text ?? s?.output?.choices?.[0]?.message?.content ?? '');
@@ -303,45 +312,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }
             }
 
-            if (doCore) {
-                const coreMsgs: Msg[] = [
-                    { role: 'system', content:
-                            'Produce a Core Summary (≤1000 tokens): curated, deduped recap of goals, decisions (+why), constraints, ' +
-                            'key definitions, and open tasks. No redundancy.' },
-                    ...history.slice(-16),
-                    { role: 'user', content: 'Update the Core Summary now.' }
-                ];
-                const c = await callRunpod({
-                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    input: { task: 'chat-completions', model: 'glm-4.5-air', messages: coreMsgs, temperature: 0.1, max_tokens: 1200 },
-                    timeoutMs: RUNPOD_CHAT_TIMEOUT,
-                });
-                const coreText = norm(c?.output?.text ?? c?.output?.choices?.[0]?.message?.content ?? '');
-                if (coreText) {
-                    updates.core_summary = coreText.slice(0, 16000);
-                    updates.last_core_turn = turnsNext;
-                }
-            }
-
-            if (doAppx) {
-                const appMsgs: Msg[] = [
-                    { role: 'system', content:
-                            'Produce an Extended Appendix (≤1500 tokens): stable addendum with canonical definitions, pivotal examples, ' +
-                            'brief rationale trails, and key IDs/links. Avoid duplication with Core Summary.' },
-                    ...history.slice(-20),
-                    { role: 'user', content: 'Update the Extended Appendix now.' }
-                ];
-                const a = await callRunpod({
-                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    input: { task: 'chat-completions', model: 'glm-4.5-air', messages: appMsgs, temperature: 0.1, max_tokens: 1600 },
-                    timeoutMs: RUNPOD_CHAT_TIMEOUT,
-                });
-                const appText = norm(a?.output?.text ?? a?.output?.choices?.[0]?.message?.content ?? '');
-                if (appText) {
-                    updates.extended_appendix = appText.slice(0, 24000);
-                    updates.last_appendix_turn = turnsNext;
-                }
-            }
+            // NOTE: doCore/doAppx disabled on schemas without those columns.
+            // If you later add them, switch the two flags above to real conditions and
+            // add updates.core_summary / updates.extended_appendix / last_core_turn / last_appendix_turn.
         } catch {}
 
         try { await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId); } catch {}
