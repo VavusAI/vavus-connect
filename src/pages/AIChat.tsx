@@ -113,13 +113,15 @@ const AIChat = () => {
   const { items: convos, loading: convLoading, refresh: refreshConvos } = useConversations();
   const { items: msgs, /* loading: msgsLoading */ refresh: refreshMsgs } = useMessages(activeId);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const [isNearBottom, setIsNearBottom] = useState(true);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!isNearBottomRef.current) return;
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     isNearBottomRef.current = true;
     setIsNearBottom(true);
   };
@@ -142,7 +144,7 @@ const AIChat = () => {
   }, [convos, activeId]);
 
   useEffect(() => {
-    if (isNearBottomRef.current) scrollToBottom();
+    scrollToBottom();
   }, [msgs, isTyping, showStream, streamText]);
 
   async function handleSendMessage() {
@@ -170,7 +172,7 @@ const AIChat = () => {
 
       onDelta: (chunk) => {
         setStreamText(prev => prev + chunk);
-        if (isNearBottomRef.current) scrollToBottom();
+        scrollToBottom();
       },
       onDone: async (_final, info) => {
         // 2) Save conversation with final assistant text
@@ -205,7 +207,7 @@ const AIChat = () => {
           setIsTyping(false);
           setShowStream(false);
           setStreamText('');
-          if (isNearBottomRef.current) scrollToBottom();
+          scrollToBottom();
         }
         if (info?.finishReason === 'length') {
           toast({
@@ -230,11 +232,14 @@ const AIChat = () => {
 
   function startNewConversation() {
     setActiveId(undefined);
-    refreshMsgs(undefined);
+    pickedDefaultRef.current = false;
+    isNearBottomRef.current = true;
+    setIsNearBottom(true);
     setInputMessage('');
     setStreamText('');
     setShowStream(false);
     setIsTyping(false);
+    refreshConvos();
     // messages hook will return empty until first send creates a conversation
   }
 
@@ -444,12 +449,13 @@ const AIChat = () => {
                     </div>
                 )}
 
-                <div ref={messagesEndRef} />
               </div>
               {!isNearBottom && (
                   <Button
-                      onClick={scrollToBottom}
-                      size="sm"
+                      onClick={() => {
+                        isNearBottomRef.current = true;
+                        scrollToBottom();
+                      }}                      size="sm"
                       className="absolute bottom-4 right-4"
                   >
                     <ArrowDown className="h-4 w-4 mr-1" />
