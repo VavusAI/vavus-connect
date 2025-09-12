@@ -141,8 +141,8 @@ const AIChat = () => {
       setActiveId(convos[0].id);
       pickedDefaultRef.current = true;
     }
-  }, [convos, activeId]);
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convos]);
   useEffect(() => {
     scrollToBottom();
   }, [msgs, isTyping, showStream, streamText]);
@@ -232,7 +232,6 @@ const AIChat = () => {
 
   function startNewConversation() {
     setActiveId(undefined);
-    pickedDefaultRef.current = false;
     isNearBottomRef.current = true;
     setIsNearBottom(true);
     setInputMessage('');
