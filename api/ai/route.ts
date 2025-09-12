@@ -1,3 +1,4 @@
+// /app/api/ai/route.ts
 export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
@@ -6,50 +7,35 @@ export async function POST(req: Request) {
     const url   = process.env.RUNPOD_CHAT_URL?.trim();
     const token = process.env.RUNPOD_CHAT_TOKEN?.trim();
     if (!url || !token) {
-        const missing = !url && !token ? 'RUNPOD_CHAT_URL & RUNPOD_CHAT_TOKEN'
-            : !url ? 'RUNPOD_CHAT_URL' : 'RUNPOD_CHAT_TOKEN';
-        return new Response(JSON.stringify({ error: `Missing env: ${missing}` }), { status: 500 });
+        const miss = !url && !token ? 'RUNPOD_CHAT_URL & RUNPOD_CHAT_TOKEN' : (!url ? 'RUNPOD_CHAT_URL' : 'RUNPOD_CHAT_TOKEN');
+        return new Response(JSON.stringify({ error: `Missing env: ${miss}` }), { status: 500 });
     }
 
     const effectiveModel = model || process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
 
-    const common = { task: 'chat-completions', model: effectiveModel, session_id, messages, temperature, max_tokens };
+    // NOTE: no "input" wrapper here
+    const body = { task: 'chat-completions', model: effectiveModel, session_id, messages, temperature, max_tokens };
 
-    // Attempt 1: RunPod runsync format (expects { input: {...} })
-    let r = await fetch(url, {
+    const r = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ input: common }),
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
     });
 
-    // If the pod says "messages missing", retry with direct body (OpenAI-style servers)
-    let j: any;
-    try { j = await r.json(); } catch { /* ignore */ }
-
-    const missingMessages =
-        r.status === 400 &&
-        (j?.error?.message?.some?.((e: any) => e?.loc?.[0] === 'body' && e?.loc?.[1] === 'messages') ||
-            /messages.*required/i.test(JSON.stringify(j)));
-
-    if (missingMessages) {
-        r = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify(common),
-        });
-        try { j = await r.json(); } catch { /* ignore */ }
-    }
-
     if (!r.ok) {
-        return new Response(JSON.stringify({ error: `Runpod ${r.status}: ${typeof j === 'object' ? JSON.stringify(j) : await r.text()}` }), { status: 502 });
+        const text = await r.text();
+        return new Response(JSON.stringify({ error: `Runpod ${r.status}: ${text}` }), { status: 502 });
     }
 
-    const text =
+    const j = await r.json();
+    const reply =
         j?.output?.text ??
         j?.output?.choices?.[0]?.message?.content ??
-        j?.output?.choices?.[0]?.text ??
-        j?.choices?.[0]?.message?.content ?? // OpenAI-style
+        j?.choices?.[0]?.message?.content ??
         j?.text ?? '';
 
-    return Response.json({ reply: text, raw: j });
+    return Response.json({ reply, raw: j });
 }
