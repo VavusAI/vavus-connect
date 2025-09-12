@@ -38,7 +38,6 @@ async function streamChat({
     const res = await fetch('/api/ai-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // Your /api/ai-stream handler forces stream:true upstream
       body: JSON.stringify({
         model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
         temperature: 0.3,
@@ -59,7 +58,6 @@ async function streamChat({
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      // SSE frames are separated by a blank line
       const parts = buffer.split('\n\n');
       buffer = parts.pop() || '';
 
@@ -101,13 +99,8 @@ const AIChat = () => {
   const [isTyping, setIsTyping] = useState(false);
 
   // Streaming UI state (ephemeral assistant bubble)
-  const [streamText, setStreamText] = useState('');
+  const [streamText, setStreamText] = useState(''); // kept for logic parity; not shown to user
   const [showStream, setShowStream] = useState(false);
-
-  // --- NEW: thinking timer state (non-invasive) ---
-  const [elapsedSec, setElapsedSec] = useState(0);
-  const startRef = useRef<number | null>(null);
-  const intervalRef = useRef<number | null>(null);
 
   // Toggles
   const [mode, setMode] = useState<Mode>('normal');
@@ -155,29 +148,6 @@ const AIChat = () => {
     scrollToBottom();
   }, [msgs, isTyping, showStream, streamText]);
 
-  // --- NEW: manage the timer while typing ---
-  useEffect(() => {
-    if (isTyping && startRef.current != null) {
-      // update ~5 times per second
-      const id = window.setInterval(() => {
-        setElapsedSec(((Date.now() - (startRef.current as number)) / 1000));
-      }, 200);
-      intervalRef.current = id as unknown as number;
-      return () => {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-      };
-    } else {
-      // ensure cleared
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    }
-  }, [isTyping]);
-
   async function handleSendMessage() {
     const text = inputMessage.trim();
     if (!text) return;
@@ -186,13 +156,9 @@ const AIChat = () => {
     setIsTyping(true);
     setInputMessage('');
     setShowStream(true);
-    setStreamText('');
+    setStreamText(''); // not shown to user
 
-    // NEW: start timer
-    startRef.current = Date.now();
-    setElapsedSec(0);
-
-    // Streaming context (lightweight): system + last few turns + user
+    // Streaming context: system + last few turns + user
     const streamingMessages = [
       { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
@@ -200,22 +166,18 @@ const AIChat = () => {
     ];
     const maxTokens = longMode ? 4096 : 2048;
 
-    // 1) Stream live tokens to UI
+    // 1) Stream, but DO NOT reveal tokens to the user
     await streamChat({
       messages: streamingMessages,
       maxTokens,
 
-      onDelta: (chunk) => {
-        setStreamText(prev => prev + chunk);
+      onDelta: (_chunk) => {
+        // Intentionally do NOT update UI with partial content.
+        // We still scroll to keep "thinking…" bubble in view.
         scrollToBottom();
       },
       onDone: async (_final, info) => {
-        // Append transient timing note before persisting
-        const seconds = elapsedSec.toFixed(1);
-        setStreamText(prev => (prev ? `${prev}\n\n— thought for ${seconds} s` : `— thought for ${seconds} s`));
-        scrollToBottom();
-
-        // 2) Save conversation with final assistant text
+        // 2) Save conversation with final assistant text (only outcome is shown)
         try {
           const resp = await saveChat({
             conversationId: activeId,
@@ -244,15 +206,8 @@ const AIChat = () => {
             variant: 'destructive',
           });
         } finally {
-          // stop timer
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-          startRef.current = null;
-
           setIsTyping(false);
-          setShowStream(false);
+          setShowStream(false); // hide the placeholder; final message is now in history
           setStreamText('');
           scrollToBottom();
         }
@@ -265,17 +220,6 @@ const AIChat = () => {
       },
 
       onError: (e: unknown) => {
-        // Append transient timing note on error as well
-        const seconds = elapsedSec.toFixed(1);
-        setStreamText(prev => (prev ? `${prev}\n\n— thought for ${seconds} s` : `— thought for ${seconds} s`));
-
-        // stop timer
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-        startRef.current = null;
-
         setIsTyping(false);
         setShowStream(false);
         setStreamText('');
@@ -296,14 +240,7 @@ const AIChat = () => {
     setStreamText('');
     setShowStream(false);
     setIsTyping(false);
-    // stop timer if running
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    startRef.current = null;
     refreshConvos();
-    // messages hook will return empty until first send creates a conversation
   }
 
   function handleFeatureClick(name: string) {
@@ -312,6 +249,7 @@ const AIChat = () => {
       description: 'We’ll enable uploads, OCR and export shortly.',
     });
   }
+
   async function handleRenameConversation() {
     if (!activeId) return;
     const currentTitle = convos.find((c: any) => c.id === activeId)?.title || '';
@@ -489,20 +427,20 @@ const AIChat = () => {
                     </div>
                 ))}
 
-                {/* Ephemeral streaming assistant bubble */}
+                {/* Ephemeral streaming assistant bubble (no partial content) */}
                 {showStream && (
                     <div className="flex justify-start">
                       <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
-                        <p className="text-sm whitespace-pre-wrap">{streamText || '...'}</p>
-                        <p className="text-xs mt-1 text-muted-foreground">
-                          {/* live timer */}
-                          typing… {elapsedSec.toFixed(1)} s
+                        <p className="text-sm whitespace-pre-wrap">
+                          {/* Only show thinking state */}
+                          thinking…
                         </p>
+                        <p className="text-xs mt-1 text-muted-foreground">working on a reply</p>
                       </div>
                     </div>
                 )}
 
-                {/* typing dots (optional; can remove since streaming bubble shows progress) */}
+                {/* typing dots (kept as fallback when no stream bubble) */}
                 {isTyping && !showStream && (
                     <div className="flex justify-start">
                       <div className="bg-surface border border-border p-3 rounded-lg">
