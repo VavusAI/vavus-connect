@@ -44,6 +44,16 @@ async function getConversationColumns(): Promise<Set<string>> {
     return convColsCache;
 }
 
+// -------- Sanitizer: remove chain-of-thought --------
+function stripReasoning(s?: string): string {
+    if (!s) return '';
+    let out = s;
+    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
+    out = out.replace(/<\/?think>/gi, '');
+    return out.trim();
+}
+
 // -------- Search helper --------
 async function fetchSearx(message: string, cap: number): Promise<WebSource[]> {
     if (!SEARXNG_URL) return [];
@@ -147,7 +157,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // detect available columns once per cold start
     const convCols = await getConversationColumns();
-    const hasLastSummaryTurn = convCols.has('last_summary_turn');
+    const hasLastSummaryCol = convCols.has('last_summary_turn'); // <-- declare ONCE
 
     // auth (best-effort)
     let userId: string | null = null;
@@ -158,7 +168,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const { data, error } = await supabaseAdmin
             .from('conversations')
             .insert({ user_id: userId })
-            .select('*') // avoid typed parser errors with dynamic columns
+            .select('*')
             .single();
         if (error) return bad(res, 500, `DB error: ${error.message}`);
         conversationId = (data as any).id as string;
@@ -182,7 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         summary: '',
         turns_count: 0,
         long_mode_enabled: false,
-        ...(hasLastSummaryTurn ? { last_summary_turn: 0 } : {}),
+        ...(hasLastSummaryCol ? { last_summary_turn: 0 } : {}),
     };
     try {
         const { data, error } = await supabaseAdmin
@@ -303,6 +313,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
     }
 
+    // Sanitize: remove chain-of-thought before saving
+    replyText = stripReasoning(replyText);
+
     // ----- persist both turns -----
     const { error: umErr } = await supabaseAdmin.from('messages').insert({
         conversation_id: conversationId, user_id: userId, role: 'user', content: message,
@@ -319,7 +332,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     history.push({ role: 'assistant', content: replyText });
 
     // ---- short summary cadence (auto: column-aware) ----
-    const doShort = hasLastSummaryTurn
+    const doShort = hasLastSummaryCol
         ? (turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY)
         : (turnsNext % SUMMARY_REFRESH_EVERY === 0);
 
@@ -343,10 +356,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
             });
 
-            const summaryClean = norm(newSummary);
+            const summaryCleanRaw = norm(newSummary);
+            const summaryClean = stripReasoning(summaryCleanRaw);
             if (summaryClean) {
                 updates.summary = summaryClean.slice(0, 6000);
-                if (hasLastSummaryTurn) (updates as any).last_summary_turn = turnsNext;
+                if (hasLastSummaryCol) (updates as any).last_summary_turn = turnsNext;
             }
         }
     } catch {

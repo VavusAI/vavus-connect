@@ -20,6 +20,19 @@ type DbMessage = {
 type Mode = 'normal' | 'thinking';
 type Conversation = { id: string; title?: string | null };
 
+/** Strip any chain-of-thought / reasoning before showing or saving */
+function stripReasoning(s: string): string {
+  if (!s) return s;
+  let out = s;
+  // Remove <think> ... </think>
+  out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Remove fenced reasoning blocks like ```thinking ...``` or ```reasoning ...```
+  out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
+  // Clean stray tags just in case
+  out = out.replace(/<\/?think>/gi, '');
+  return out.trim();
+}
+
 /** ---- SSE streaming helper (OpenAI-style) ---- */
 async function streamChat({
                             messages,
@@ -58,6 +71,7 @@ async function streamChat({
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+      // SSE frames are separated by a blank line
       const parts = buffer.split('\n\n');
       buffer = parts.pop() || '';
 
@@ -98,9 +112,14 @@ const AIChat = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
-  // Streaming UI state (ephemeral assistant bubble)
-  const [streamText, setStreamText] = useState(''); // kept for logic parity; not shown to user
+  // Streaming UI state
+  const [streamText, setStreamText] = useState(''); // shows the final answer tokens (no CoT)
   const [showStream, setShowStream] = useState(false);
+
+  // Internal streaming guards to hide CoT until it ends
+  const rawRef = useRef('');                 // full raw streamed text (may contain <think>)
+  const answerStartedRef = useRef(false);    // flips true once we detect end of CoT
+  const streamedIndexRef = useRef(0);        // last index of rawRef we've shown to the user
 
   // Toggles
   const [mode, setMode] = useState<Mode>('normal');
@@ -156,7 +175,10 @@ const AIChat = () => {
     setIsTyping(true);
     setInputMessage('');
     setShowStream(true);
-    setStreamText(''); // not shown to user
+    setStreamText('');
+    rawRef.current = '';
+    answerStartedRef.current = false;
+    streamedIndexRef.current = 0;
 
     // Streaming context: system + last few turns + user
     const streamingMessages = [
@@ -166,23 +188,62 @@ const AIChat = () => {
     ];
     const maxTokens = longMode ? 4096 : 2048;
 
-    // 1) Stream, but DO NOT reveal tokens to the user
+    // 1) Stream live tokens, but only show tokens after </think>
     await streamChat({
       messages: streamingMessages,
       maxTokens,
 
-      onDelta: (_chunk) => {
-        // Intentionally do NOT update UI with partial content.
-        // We still scroll to keep "thinking…" bubble in view.
-        scrollToBottom();
+      onDelta: (chunk) => {
+        // accumulate raw text (which may include <think>)
+        rawRef.current += chunk;
+
+        const rawLower = rawRef.current.toLowerCase();
+
+        // If no <think> appears at all, treat everything as answer
+        if (!answerStartedRef.current && !rawLower.includes('<think>')) {
+          answerStartedRef.current = true;
+        }
+
+        // If we haven't started answer yet, check for end of </think>
+        if (!answerStartedRef.current) {
+          const endIdx = rawLower.lastIndexOf('</think>');
+          if (endIdx !== -1) {
+            answerStartedRef.current = true;
+            // Show any content AFTER </think>
+            const after = rawRef.current.slice(endIdx + '</think>'.length);
+            const clean = stripReasoning(after);
+            if (clean) {
+              setStreamText(prev => prev + clean);
+            }
+            streamedIndexRef.current = rawRef.current.length;
+            scrollToBottom();
+            return;
+          }
+          // Still thinking; do not show anything yet
+          scrollToBottom();
+          return;
+        }
+
+        // Already in answer mode: show only the new part since last time
+        const newPortion = rawRef.current.slice(streamedIndexRef.current);
+        streamedIndexRef.current = rawRef.current.length;
+        const cleanDelta = stripReasoning(newPortion);
+        if (cleanDelta) {
+          setStreamText(prev => prev + cleanDelta);
+          scrollToBottom();
+        }
       },
+
       onDone: async (_final, info) => {
-        // 2) Save conversation with final assistant text (only outcome is shown)
+        // Clean the final answer completely (belt & suspenders)
+        const clean = stripReasoning(_final);
+
+        // 2) Save conversation with final assistant text (already cleaned)
         try {
           const resp = await saveChat({
             conversationId: activeId,
             message: text,
-            assistantText: _final,
+            assistantText: clean,
             mode,
             longMode,
             useInternet,
@@ -207,8 +268,11 @@ const AIChat = () => {
           });
         } finally {
           setIsTyping(false);
-          setShowStream(false); // hide the placeholder; final message is now in history
+          setShowStream(false); // hide the ephemeral bubble; final message is now in history
           setStreamText('');
+          rawRef.current = '';
+          answerStartedRef.current = false;
+          streamedIndexRef.current = 0;
           scrollToBottom();
         }
         if (info?.finishReason === 'length') {
@@ -223,6 +287,9 @@ const AIChat = () => {
         setIsTyping(false);
         setShowStream(false);
         setStreamText('');
+        rawRef.current = '';
+        answerStartedRef.current = false;
+        streamedIndexRef.current = 0;
         toast({
           title: 'Streaming failed',
           description: e instanceof Error ? e.message : 'Please try again.',
@@ -240,6 +307,9 @@ const AIChat = () => {
     setStreamText('');
     setShowStream(false);
     setIsTyping(false);
+    rawRef.current = '';
+    answerStartedRef.current = false;
+    streamedIndexRef.current = 0;
     refreshConvos();
   }
 
@@ -427,15 +497,18 @@ const AIChat = () => {
                     </div>
                 ))}
 
-                {/* Ephemeral streaming assistant bubble (no partial content) */}
+                {/* Ephemeral streaming assistant bubble */}
                 {showStream && (
                     <div className="flex justify-start">
                       <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
                         <p className="text-sm whitespace-pre-wrap">
-                          {/* Only show thinking state */}
-                          thinking…
+                          {answerStartedRef.current
+                              ? (streamText || '…')
+                              : 'thinking…'}
                         </p>
-                        <p className="text-xs mt-1 text-muted-foreground">working on a reply</p>
+                        {!answerStartedRef.current && (
+                            <p className="text-xs mt-1 text-muted-foreground">working on a reply</p>
+                        )}
                       </div>
                     </div>
                 )}
