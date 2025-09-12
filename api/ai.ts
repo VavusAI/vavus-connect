@@ -9,7 +9,7 @@ const GLOBAL_SYSTEM = 'You are VAVUS AI. Be concise, actionable, and accurate.';
 const FAST_MAX_TOKENS = 1024;
 const THINK_MAX_TOKENS = 2048;
 const WINDOW_TURNS_FAST = 8;
-const WINDOW_TURNS_LONG = 12;
+const WINDOW_TURNS_LONG = 16; // Doubled for long mode
 const SUMMARY_REFRESH_EVERY = 8;
 
 const SEARXNG_URL = process.env.SEARXNG_URL;
@@ -45,8 +45,9 @@ async function getConversationColumns(): Promise<Set<string>> {
 }
 
 // -------- Sanitizer: remove chain-of-thought --------
-function stripReasoning(s?: string): string {
+function stripReasoning(s?: string, skipStrip = false): string {
     if (!s) return '';
+    if (skipStrip) return s.trim();
     let out = s;
     out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
     out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
@@ -129,7 +130,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         longMode,
         useInternet = false,
         usePersona,
-        useWorkspace
+        useWorkspace,
+        skipStrip = false, // New: optional flag to skip reasoning strip
     } = body as {
         conversationId?: string;
         message?: string;
@@ -141,6 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         useInternet?: boolean;
         usePersona?: boolean;
         useWorkspace?: boolean;
+        skipStrip?: boolean;
     };
 
     if (!message) return bad(res, 400, 'message required');
@@ -253,9 +256,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     msgs.push({ role: 'system', content: GLOBAL_PREFIX });
     if (signalBullets.length) msgs.push({ role: 'system', content: `Signal Hub:\n${bullets(signalBullets, 5)}` });
     if (workspaceEnabled && workspaceNote) msgs.push({ role: 'system', content: `Workspace Memory:\n${workspaceNote}` });
-    if (!longModeEnabled && shortSummary) {
-        msgs.push({ role: 'system', content: `Conversation summary:\n${shortSummary}` });
-    }
     if (system) msgs.push({ role: 'system', content: norm(system) });
 
     const recentTurns = longModeEnabled ? WINDOW_TURNS_LONG : WINDOW_TURNS_FAST;
@@ -275,7 +275,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const note = sources
                 .map(s => `[${s.id}] ${s.title} — ${s.url}\n${s.snippet}`)
                 .join('\n\n')
-                .slice(0, 4000);
+                .slice(0, longModeEnabled ? 8000 : 4000); // Double snippet length for long mode
             msgs.push({ role: 'system', content: `Web snippets:\n${note}` });
         }
     }
@@ -304,7 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const runpodRes = await runpodChat({
                 url: RUNPOD_CHAT_URL!,
                 token: RUNPOD_CHAT_TOKEN!,
-                body: { model: DEFAULT_MODEL, messages: msgs, temperature: modelTemp, max_tokens: MAX_TOKENS },
+                body: { model: DEFAULT_MODEL, messages: msgs, temperature: modelTemp, max_tokens: longModeEnabled ? MAX_TOKENS * 2 : MAX_TOKENS },
             });
             data = runpodRes.data;
             replyText = runpodRes.assistantText;
@@ -314,7 +314,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Sanitize: remove chain-of-thought before saving
-    replyText = stripReasoning(replyText);
+    replyText = stripReasoning(replyText, skipStrip);
 
     // ----- persist both turns -----
     const { error: umErr } = await supabaseAdmin.from('messages').insert({
@@ -332,9 +332,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     history.push({ role: 'assistant', content: replyText });
 
     // ---- short summary cadence (auto: column-aware) ----
-    const doShort = hasLastSummaryCol
+    const useSummary = turnsNext > 4; // No summary for first 4 messages
+    const doShort = useSummary && (hasLastSummaryCol
         ? (turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY)
-        : (turnsNext % SUMMARY_REFRESH_EVERY === 0);
+        : (turnsNext % SUMMARY_REFRESH_EVERY === 0));
 
     const updates: Record<string, any> = {
         turns_count: turnsNext,
@@ -347,24 +348,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 { role: 'system', content:
                         'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
                         'Use short bullets; compact and durable; no quotes.' },
-                ...history.slice(-12),
+                ...history.slice(-recentTurns),
                 { role: 'user', content: 'Update the running summary now.' },
             ];
 
             const { assistantText: newSummary } = await runpodChat({
                 url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
+                body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: longModeEnabled ? 1200 : 600 },
             });
 
             const summaryCleanRaw = norm(newSummary);
             const summaryClean = stripReasoning(summaryCleanRaw);
             if (summaryClean) {
-                updates.summary = summaryClean.slice(0, 6000);
+                updates.summary = summaryClean.slice(0, longModeEnabled ? 12000 : 6000);
                 if (hasLastSummaryCol) (updates as any).last_summary_turn = turnsNext;
             }
         }
     } catch {
         // best-effort; ignore summary failures
+    }
+
+    // ---- persona summarization (best-effort, after 5 convos) ----
+    try {
+        if (userId && !personaSummary && (await supabaseAdmin.from('conversations').select('id', { count: 'exact' }).eq('user_id', userId)).count === 5) {
+            const { data: allConvs } = await supabaseAdmin.from('conversations').select('summary').eq('user_id', userId);
+            if (allConvs && allConvs.length) {
+                const sumMsgs: Msg[] = [
+                    { role: 'system', content: 'Summarize the user\'s persona from these conversation summaries: traits, preferences, goals. Use short bullets; 100-200 words.' },
+                    { role: 'user', content: allConvs.map(c => norm((c as any).summary)).filter(Boolean).join('\n\n') },
+                ];
+                const { assistantText: newPersona } = await runpodChat({
+                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
+                    body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 300 },
+                });
+                const personaClean = stripReasoning(norm(newPersona));
+                if (personaClean) {
+                    await supabaseAdmin.from('user_memory').upsert({ user_id: userId, persona_summary: personaClean.slice(0, 2000) });
+                }
+            }
+        }
+    } catch {
+        // best-effort; ignore
     }
 
     try {

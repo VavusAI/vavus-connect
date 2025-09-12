@@ -115,6 +115,7 @@ const AIChat = () => {
   // Streaming UI state
   const [streamText, setStreamText] = useState(''); // shows the final answer tokens (no CoT)
   const [showStream, setShowStream] = useState(false);
+  const [isThinking, setIsThinking] = useState(false); // New: for thinking mode indicator
 
   // Internal streaming guards to hide CoT until it ends
   const rawRef = useRef('');                 // full raw streamed text (may contain CoT)
@@ -197,7 +198,41 @@ const AIChat = () => {
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
       { role: 'user' as const, content: text },
     ];
-    const maxTokens = longMode ? 4096 : 2048;
+
+    const maxTokens = mode === 'thinking' ? (longMode ? 4096 : 2048) : (longMode ? 2048 : 1024);
+
+    // Handle thinking mode: First non-streaming reasoning, then stream final
+    if (mode === 'thinking') {
+      setIsThinking(true);
+      try {
+        // Non-streaming internal reasoning call to /api/ai
+        const { reply: reasoning } = await fetch('/api/ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: activeId,
+            message: text,
+            mode: 'thinking',
+            longMode,
+            useInternet,
+            usePersona,
+            useWorkspace,
+            skipStrip: true, // Keep reasoning for context
+          }),
+        }).then(res => res.json());
+
+        // Now stream final response with reasoning as context
+        streamingMessages.push({ role: 'system', content: `[Internal Reasoning: ${reasoning}]\nNow provide the final answer.` });
+      } catch (e) {
+        toast({ title: 'Thinking failed', description: 'Error during reasoning step.', variant: 'destructive' });
+        setIsTyping(false);
+        setShowStream(false);
+        setIsThinking(false);
+        return;
+      } finally {
+        setIsThinking(false);
+      }
+    }
 
     // 1) Stream live tokens, but only show tokens after end-of-reasoning boundary
     await streamChat({
@@ -536,7 +571,7 @@ const AIChat = () => {
                         <p className="text-sm whitespace-pre-wrap">
                           {answerStartedRef.current
                               ? (streamText || '…')
-                              : 'thinking…'}
+                              : (isThinking ? 'Thinking...' : 'thinking…')}
                         </p>
                         {!answerStartedRef.current && (
                             <p className="text-xs mt-1 text-muted-foreground">working on a reply</p>
