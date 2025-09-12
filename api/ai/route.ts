@@ -2,13 +2,19 @@
 export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
-    const body = await req.json();
-
     const url   = process.env.RUNPOD_CHAT_URL?.trim();
     const token = process.env.RUNPOD_CHAT_TOKEN?.trim();
     if (!url || !token) {
-        return new Response(JSON.stringify({ error: 'Missing Runpod env vars' }), { status: 500 });
+        return new Response(JSON.stringify({ error: 'Missing RUNPOD_CHAT_URL or RUNPOD_CHAT_TOKEN' }), { status: 500 });
     }
+
+    const body = await req.json();
+
+    // Always request a stream
+    const upstreamBody = {
+        ...body,
+        stream: true,
+    };
 
     const r = await fetch(url, {
         method: 'POST',
@@ -16,14 +22,20 @@ export async function POST(req: Request) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify(body),   // <-- send body directly
+        body: JSON.stringify(upstreamBody),
     });
 
     if (!r.ok) {
-        const text = await r.text();
-        console.error('Runpod error body:', text.slice(0,200));
+        const text = await r.text().catch(() => '');
         return new Response(JSON.stringify({ error: `Runpod ${r.status}: ${text}` }), { status: 502 });
     }
 
-    return new Response(r.body, { status: r.status, headers: r.headers });
+    // Pass through SSE stream unchanged
+    const headers = new Headers();
+    headers.set('Content-Type', 'text/event-stream; charset=utf-8');
+    headers.set('Cache-Control', 'no-cache, no-transform');
+    headers.set('Connection', 'keep-alive');
+    headers.set('X-Accel-Buffering', 'no');
+
+    return new Response(r.body, { status: 200, headers });
 }

@@ -19,11 +19,84 @@ type DbMessage = {
 
 type Mode = 'normal' | 'thinking';
 
+/** ---- SSE streaming helper (OpenAI-style) ---- */
+async function streamChat({
+                            messages,
+                            onDelta,
+                            onDone,
+                            onError,
+                          }: {
+  messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
+  onDelta: (chunk: string) => void;
+  onDone: (full: string) => void;
+  onError: (e: any) => void;
+}) {
+  try {
+    const res = await fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // Your /app/api/ai/route.ts forces stream:true upstream
+      body: JSON.stringify({
+        model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
+        temperature: 0.3,
+        max_tokens: 1024,
+        messages,
+      }),
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let full = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      // SSE frames are separated by a blank line
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        const line = part.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') {
+          onDone(full);
+          return;
+        }
+        try {
+          const json = JSON.parse(payload);
+          const delta =
+              json?.choices?.[0]?.delta?.content ??
+              json?.choices?.[0]?.message?.content ?? '';
+          if (delta) {
+            full += delta;
+            onDelta(delta);
+          }
+        } catch {
+          // ignore keepalives/bad lines
+        }
+      }
+    }
+
+    onDone(full);
+  } catch (e) {
+    onError(e);
+  }
+}
+
 const AIChat = () => {
   const { toast } = useToast();
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+
+  // Streaming UI state (ephemeral assistant bubble)
+  const [streamText, setStreamText] = useState('');
+  const [showStream, setShowStream] = useState(false);
 
   // Toggles
   const [mode, setMode] = useState<Mode>('normal');
@@ -38,8 +111,7 @@ const AIChat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
-  // PATCH: gate the initial “pick latest conversation” to ONLY run once on mount,
-  // so clicking New chat (setActiveId(undefined)) doesn’t get auto-overwritten.
+  // Only pick default conversation once on mount
   const pickedDefaultRef = useRef(false);
   useEffect(() => {
     if (!pickedDefaultRef.current && !activeId && convos.length > 0) {
@@ -50,46 +122,77 @@ const AIChat = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [msgs, isTyping]);
+  }, [msgs, isTyping, showStream, streamText]);
 
   async function handleSendMessage() {
     const text = inputMessage.trim();
     if (!text) return;
 
-    try {
-      setIsTyping(true);
-      setInputMessage('');
+    // reset UI
+    setIsTyping(true);
+    setInputMessage('');
+    setShowStream(true);
+    setStreamText('');
 
-      // Send to serverless API → saves user msg + assistant reply in Supabase
-      const resp = await sendChat({
-        conversationId: activeId,
-        message: text,
-        mode,
-        longMode,
-        useInternet,
-        usePersona,
-        useWorkspace,
-      } as any);
+    // Streaming context (lightweight): system + last few turns + user
+    const streamingMessages = [
+      { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
+      ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
+      { role: 'user' as const, content: text },
+    ];
 
-      // PATCH: be resilient if API doesn’t return conversationId for some reason
-      const { conversationId } = resp || {};
-      if (conversationId) {
-        setActiveId(conversationId);
-        await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
-      } else {
-        await refreshConvos();
-        if (activeId) await refreshMsgs(activeId);
-      }
-    } catch (e: any) {
-      toast({
-        title: 'Could not send',
-        description: typeof e?.message === 'string' ? e.message : 'Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsTyping(false);
-      scrollToBottom();
-    }
+    // 1) Stream live tokens to UI
+    await streamChat({
+      messages: streamingMessages,
+      onDelta: (chunk) => {
+        setStreamText(prev => prev + chunk);
+        scrollToBottom();
+      },
+      onDone: async (_final) => {
+        // 2) Persist with your existing non-streaming API (recomputes server-side)
+        try {
+          const resp = await sendChat({
+            conversationId: activeId,
+            message: text,
+            mode,
+            longMode,
+            useInternet,
+            usePersona,
+            useWorkspace,
+          } as any);
+
+          const { conversationId } = resp || {};
+          if (conversationId) {
+            setActiveId(conversationId);
+            await Promise.all([refreshMsgs(conversationId), refreshConvos()]);
+          } else {
+            await refreshConvos();
+            if (activeId) await refreshMsgs(activeId);
+          }
+        } catch (e: any) {
+          console.error(e);
+          toast({
+            title: 'Saved copy may differ',
+            description: 'We showed you the streamed reply, but saving might have produced a slightly different answer.',
+          });
+        } finally {
+          setIsTyping(false);
+          setShowStream(false);
+          setStreamText('');
+          scrollToBottom();
+        }
+      },
+      onError: (e) => {
+        setIsTyping(false);
+        setShowStream(false);
+        setStreamText('');
+        toast({
+          title: 'Streaming failed',
+          description: e?.message || 'Please try again.',
+          variant: 'destructive',
+        });
+      },
+    });
   }
 
   function startNewConversation() {
@@ -125,7 +228,6 @@ const AIChat = () => {
                   onValueChange={(v) => setActiveId(v || undefined)}
               >
                 <SelectTrigger className="w-64">
-                  {/* PATCH: clearer placeholder when starting a brand-new chat */}
                   <SelectValue placeholder={convLoading ? 'Loading…' : (activeId ? 'Select conversation' : 'New conversation')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -254,8 +356,18 @@ const AIChat = () => {
                     </div>
                 ))}
 
-                {/* typing dots */}
-                {isTyping && (
+                {/* Ephemeral streaming assistant bubble */}
+                {showStream && (
+                    <div className="flex justify-start">
+                      <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
+                        <p className="text-sm whitespace-pre-wrap">{streamText || '...'}</p>
+                        <p className="text-xs mt-1 text-muted-foreground">typing…</p>
+                      </div>
+                    </div>
+                )}
+
+                {/* typing dots (optional; can remove since streaming bubble shows progress) */}
+                {isTyping && !showStream && (
                     <div className="flex justify-start">
                       <div className="bg-surface border border-border p-3 rounded-lg">
                         <div className="flex space-x-1">
