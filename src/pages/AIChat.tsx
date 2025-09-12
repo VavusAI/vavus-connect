@@ -22,6 +22,7 @@ type Conversation = { id: string; title?: string | null };
 /** ---- SSE streaming helper (OpenAI-style) ---- */
 async function streamChat({
                             messages,
+                            maxTokens,
                             onDelta,
                             onDone,
                             onError,
