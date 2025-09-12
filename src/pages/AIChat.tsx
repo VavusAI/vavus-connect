@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, MessageSquare, Lock, Upload, FileText, Download, Plus, ArrowDown, Pencil } from 'lucide-react';import { Button } from '@/components/ui/button';
+import { Send, MessageSquare, Lock, Upload, FileText, Download, Plus, ArrowDown, Pencil } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -103,6 +104,11 @@ const AIChat = () => {
   const [streamText, setStreamText] = useState('');
   const [showStream, setShowStream] = useState(false);
 
+  // --- NEW: thinking timer state (non-invasive) ---
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const startRef = useRef<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
+
   // Toggles
   const [mode, setMode] = useState<Mode>('normal');
   const [longMode, setLongMode] = useState(false);
@@ -134,6 +140,7 @@ const AIChat = () => {
     isNearBottomRef.current = near;
     setIsNearBottom(near);
   };
+
   // Only pick default conversation once on mount
   const pickedDefaultRef = useRef(false);
   useEffect(() => {
@@ -143,9 +150,33 @@ const AIChat = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convos]);
+
   useEffect(() => {
     scrollToBottom();
   }, [msgs, isTyping, showStream, streamText]);
+
+  // --- NEW: manage the timer while typing ---
+  useEffect(() => {
+    if (isTyping && startRef.current != null) {
+      // update ~5 times per second
+      const id = window.setInterval(() => {
+        setElapsedSec(((Date.now() - (startRef.current as number)) / 1000));
+      }, 200);
+      intervalRef.current = id as unknown as number;
+      return () => {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      };
+    } else {
+      // ensure cleared
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    }
+  }, [isTyping]);
 
   async function handleSendMessage() {
     const text = inputMessage.trim();
@@ -156,6 +187,10 @@ const AIChat = () => {
     setInputMessage('');
     setShowStream(true);
     setStreamText('');
+
+    // NEW: start timer
+    startRef.current = Date.now();
+    setElapsedSec(0);
 
     // Streaming context (lightweight): system + last few turns + user
     const streamingMessages = [
@@ -175,6 +210,11 @@ const AIChat = () => {
         scrollToBottom();
       },
       onDone: async (_final, info) => {
+        // Append transient timing note before persisting
+        const seconds = elapsedSec.toFixed(1);
+        setStreamText(prev => (prev ? `${prev}\n\n— thought for ${seconds} s` : `— thought for ${seconds} s`));
+        scrollToBottom();
+
         // 2) Save conversation with final assistant text
         try {
           const resp = await saveChat({
@@ -204,6 +244,13 @@ const AIChat = () => {
             variant: 'destructive',
           });
         } finally {
+          // stop timer
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+          startRef.current = null;
+
           setIsTyping(false);
           setShowStream(false);
           setStreamText('');
@@ -218,6 +265,17 @@ const AIChat = () => {
       },
 
       onError: (e: unknown) => {
+        // Append transient timing note on error as well
+        const seconds = elapsedSec.toFixed(1);
+        setStreamText(prev => (prev ? `${prev}\n\n— thought for ${seconds} s` : `— thought for ${seconds} s`));
+
+        // stop timer
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        startRef.current = null;
+
         setIsTyping(false);
         setShowStream(false);
         setStreamText('');
@@ -238,6 +296,12 @@ const AIChat = () => {
     setStreamText('');
     setShowStream(false);
     setIsTyping(false);
+    // stop timer if running
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    startRef.current = null;
     refreshConvos();
     // messages hook will return empty until first send creates a conversation
   }
@@ -430,7 +494,10 @@ const AIChat = () => {
                     <div className="flex justify-start">
                       <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
                         <p className="text-sm whitespace-pre-wrap">{streamText || '...'}</p>
-                        <p className="text-xs mt-1 text-muted-foreground">typing…</p>
+                        <p className="text-xs mt-1 text-muted-foreground">
+                          {/* live timer */}
+                          typing… {elapsedSec.toFixed(1)} s
+                        </p>
                       </div>
                     </div>
                 )}
@@ -454,7 +521,8 @@ const AIChat = () => {
                       onClick={() => {
                         isNearBottomRef.current = true;
                         scrollToBottom();
-                      }}                      size="sm"
+                      }}
+                      size="sm"
                       className="absolute bottom-4 right-4"
                   >
                     <ArrowDown className="h-4 w-4 mr-1" />
