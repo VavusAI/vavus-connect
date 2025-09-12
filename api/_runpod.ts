@@ -2,8 +2,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 type RunpodReq = {
-    input: any;               // model-specific payload
-    // for serverless "runsync": { input: {...} }
+    input: any; // model-specific payload
 };
 
 export async function callRunpod({
@@ -13,7 +12,7 @@ export async function callRunpod({
                                      timeoutMs = 90000,
                                  }: {
     url: string;
-    token: string;
+    token?: string;   // now optional
     input: any;
     timeoutMs?: number;
 }) {
@@ -21,13 +20,17 @@ export async function callRunpod({
     const to = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+        };
+        if (token && token.trim()) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const res = await fetch(url, {
             method: 'POST',
             signal: controller.signal,
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`,
-            },
+            headers,
             body: JSON.stringify({ input } as RunpodReq),
         });
 
@@ -36,9 +39,7 @@ export async function callRunpod({
             throw new Error(`Runpod error ${res.status}: ${text}`);
         }
 
-        // Runpod "runsync" typically returns { output: ... }
-        const data = await res.json();
-        return data;
+        return await res.json(); // Runpod "runsync" typically returns { output: ... }
     } finally {
         clearTimeout(to);
     }
