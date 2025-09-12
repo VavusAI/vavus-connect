@@ -1,7 +1,7 @@
 /* eslint-disable import/no-unused-modules */
 // /api/ai.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { bad, allowCORS } from './_runpod.js'; // callRunpod not needed anymore
+import { bad, allowCORS } from './_runpod.js';
 import { supabaseAdmin } from './_utils/supabaseAdmin.js';
 import { requireUser } from './_utils/auth.js';
 
@@ -12,14 +12,9 @@ const WINDOW_TURNS_FAST = 8;
 const WINDOW_TURNS_LONG = 12;
 const SUMMARY_REFRESH_EVERY = 8;
 
-// optional long-memory cadence (placeholders – columns not present yet)
-const CORE_REFRESH_EVERY = 10;      // unused placeholder
-const APPENDIX_REFRESH_EVERY = 18;  // unused placeholder
-
 const SEARXNG_URL = process.env.SEARXNG_URL;
 const SEARXNG_TIMEOUT_MS = 8000;
 
-// align with your running pod
 const DEFAULT_MODEL =
     process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
 
@@ -30,6 +25,26 @@ const norm = (s?: string | null) => (s ?? '').trim().replace(/\s+/g, ' ');
 const bullets = (arr: string[], cap = 5) =>
     arr.filter(Boolean).slice(0, cap).map(s => `- ${s}`).join('\n');
 
+// -------- Schema auto-detect cache --------
+let convColsCache: Set<string> | null = null;
+
+async function getConversationColumns(): Promise<Set<string>> {
+    if (convColsCache) return convColsCache;
+    const q = await supabaseAdmin
+        .from('information_schema.columns')
+        .select('column_name')
+        .eq('table_schema', 'public')
+        .eq('table_name', 'conversations');
+
+    if (q.error) {
+        convColsCache = new Set(['id', 'summary', 'turns_count', 'long_mode_enabled', 'updated_at', 'created_at']);
+        return convColsCache;
+    }
+    convColsCache = new Set<string>((q.data || []).map((r: any) => r.column_name));
+    return convColsCache;
+}
+
+// -------- Search helper --------
 async function fetchSearx(message: string, cap: number): Promise<WebSource[]> {
     if (!SEARXNG_URL) return [];
     const q = encodeURIComponent(message.slice(0, 200));
@@ -58,43 +73,32 @@ async function fetchSearx(message: string, cap: number): Promise<WebSource[]> {
     }
 }
 
-// Small helper to call your OpenAI-style Runpod endpoint
+// --- OpenAI-style call to your Runpod endpoint (non-streaming) ---
 async function runpodChat({
                               url, token, body,
                           }: {
     url: string;
     token: string;
-    body: {
-        model: string;
-        messages: Msg[];
-        temperature?: number;
-        max_tokens?: number;
-    };
+    body: { model: string; messages: Msg[]; temperature?: number; max_tokens?: number; };
 }) {
     const r = await fetch(url, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify(body),
     });
 
     if (!r.ok) {
         const text = await r.text().catch(() => '');
-        // first 200 chars help diagnose schema errors (e.g., missing fields)
         console.error('Runpod error body:', (text || '').slice(0, 200));
         throw new Error(`Runpod ${r.status}: ${text || 'no body'}`);
     }
 
     const data = await r.json();
-    // Accept several possible shapes (OpenAI/vLLM/alt)
     const assistantText =
         data?.choices?.[0]?.message?.content ??
         data?.output?.choices?.[0]?.message?.content ??
         data?.output?.text ??
-        data?.text ??
-        '';
+        data?.text ?? '';
 
     return { data, assistantText: String(assistantText ?? '') };
 }
@@ -108,7 +112,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let {
         conversationId,
         message,
-        assistantText,
+        assistantText, // optional: save exact streamed text
         temperature = 0.3,
         system,
         mode = 'normal',
@@ -131,11 +135,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!message) return bad(res, 400, 'message required');
 
-    // ---- envs (fatal if missing) ----
+    // envs
     const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL?.trim();
     const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN?.trim();
-    const RUNPOD_CHAT_TIMEOUT = Number(process.env.RUNPOD_CHAT_TIMEOUT || 90000);
-
     if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
         const miss = !RUNPOD_CHAT_URL && !RUNPOD_CHAT_TOKEN
             ? 'RUNPOD_CHAT_URL & RUNPOD_CHAT_TOKEN'
@@ -143,19 +145,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return bad(res, 500, `Missing env: ${miss}`);
     }
 
-    // ---- auth (best-effort) ----
+    // detect available columns once per cold start
+    const convCols = await getConversationColumns();
+    const hasLastSummaryTurn = convCols.has('last_summary_turn');
+
+    // auth (best-effort)
     let userId: string | null = null;
     try { userId = requireUser(req).userId; } catch {}
 
-    // ---- create conversation if needed (SAFE SELECT) ----
+    // ---- create conversation if needed (TS-safe: select '*') ----
     if (!conversationId) {
         const { data, error } = await supabaseAdmin
             .from('conversations')
             .insert({ user_id: userId })
-            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled')
+            .select('*') // avoid typed parser errors with dynamic columns
             .single();
         if (error) return bad(res, 500, `DB error: ${error.message}`);
-        conversationId = data.id;
+        conversationId = (data as any).id as string;
     }
 
     // ---- load history ----
@@ -167,21 +173,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (histErr) return bad(res, 500, `DB error: ${histErr.message}`);
 
     const history: Msg[] = (prior || []).map(m => ({
-        role: m.role as Msg['role'],
-        content: String(m.content ?? ''),
+        role: (m as any).role as Msg['role'],
+        content: String((m as any).content ?? ''),
     }));
 
-    // ---- load conversation (SAFE SELECT) ----
+    // ---- load conversation (TS-safe: select '*') ----
     let conv: any = {
         summary: '',
         turns_count: 0,
-        last_summary_turn: 0,
-        long_mode_enabled: false
+        long_mode_enabled: false,
+        ...(hasLastSummaryTurn ? { last_summary_turn: 0 } : {}),
     };
     try {
         const { data, error } = await supabaseAdmin
             .from('conversations')
-            .select('summary, turns_count, last_summary_turn, long_mode_enabled')
+            .select('*')
             .eq('id', conversationId)
             .single();
         if (!error && data) conv = data;
@@ -196,9 +202,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 .eq('id', conversationId);
         } catch {}
     }
-    const longModeEnabled = typeof longMode === 'boolean'
-        ? longMode
-        : !!conv.long_mode_enabled;
+    const longModeEnabled = typeof longMode === 'boolean' ? longMode : !!conv.long_mode_enabled;
 
     // ---- persona / workspace (best-effort) ----
     let personaSummary = '';
@@ -211,9 +215,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 supabaseAdmin.from('workspace_memory').select('note').eq('user_id', userId).single(),
                 supabaseAdmin.from('user_settings').select('use_persona, use_workspace').eq('user_id', userId).single(),
             ]);
-            personaSummary = norm(mem?.persona_summary);
-            workspaceNote = norm(ws?.note);
-            settings = stg || {};
+            personaSummary = norm((mem as any)?.persona_summary);
+            workspaceNote = norm((ws as any)?.note);
+            settings = (stg as any) || {};
         } catch {}
     }
     const personaEnabled = typeof usePersona === 'boolean' ? usePersona : !!settings.use_persona;
@@ -234,19 +238,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         signalBullets.push(...shortSummary.split(/[\n•\-]+/).map(norm).filter(Boolean).slice(0, 2));
     }
 
-    // ---- long-memory placeholders (no DB columns yet) ----
-    const coreSummary = '';   // intentionally empty
-    const appendix = '';      // intentionally empty
-
     // ---- build prompt ----
     const msgs: Msg[] = [];
     msgs.push({ role: 'system', content: GLOBAL_PREFIX });
     if (signalBullets.length) msgs.push({ role: 'system', content: `Signal Hub:\n${bullets(signalBullets, 5)}` });
     if (workspaceEnabled && workspaceNote) msgs.push({ role: 'system', content: `Workspace Memory:\n${workspaceNote}` });
-    if (longModeEnabled) {
-        if (coreSummary) msgs.push({ role: 'system', content: `Core Summary:\n${coreSummary}` });
-        if (appendix) msgs.push({ role: 'system', content: `Extended Appendix:\n${appendix}` });
-    } else if (shortSummary) {
+    if (!longModeEnabled && shortSummary) {
         msgs.push({ role: 'system', content: `Conversation summary:\n${shortSummary}` });
     }
     if (system) msgs.push({ role: 'system', content: norm(system) });
@@ -283,26 +280,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isThinking) {
         msgs.splice(1, 0, {
             role: 'system',
-            content: 'Think internally. Return a clear final answer plus up to 3 compact bullets with key steps/assumptions.'
+            content: 'Think internally. Return a clear final answer plus up to 3 compact bullets with key steps/assumptions.',
         });
     }
 
     const turnsNext = Number(conv.turns_count || 0) + 1;
 
+    // ----- LLM call (or accept provided assistantText) -----
     let replyText = assistantText ? String(assistantText) : '';
     let data: any = null;
-
     if (!replyText) {
         try {
             const runpodRes = await runpodChat({
                 url: RUNPOD_CHAT_URL!,
                 token: RUNPOD_CHAT_TOKEN!,
-                body: {
-                    model: DEFAULT_MODEL,
-                    messages: msgs,
-                    temperature: modelTemp,
-                    max_tokens: MAX_TOKENS,
-                },
+                body: { model: DEFAULT_MODEL, messages: msgs, temperature: modelTemp, max_tokens: MAX_TOKENS },
             });
             data = runpodRes.data;
             replyText = runpodRes.assistantText;
@@ -310,22 +302,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return bad(res, 502, e?.message || 'Upstream chat error');
         }
     }
-    // persist both turns
+
+    // ----- persist both turns -----
     const { error: umErr } = await supabaseAdmin.from('messages').insert({
         conversation_id: conversationId, user_id: userId, role: 'user', content: message,
     });
     if (umErr) return bad(res, 500, umErr.message);
+
     const { error: amErr } = await supabaseAdmin.from('messages').insert({
         conversation_id: conversationId, user_id: userId, role: 'assistant', content: replyText,
     });
     if (amErr) return bad(res, 500, amErr.message);
 
-    // keep history up to date for summary
+    // update local history for summary
     history.push({ role: 'user', content: message });
     history.push({ role: 'assistant', content: replyText });
 
-    // short summary cadence (safe)
-    const doShort = turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY;
+    // ---- short summary cadence (auto: column-aware) ----
+    const doShort = hasLastSummaryTurn
+        ? (turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY)
+        : (turnsNext % SUMMARY_REFRESH_EVERY === 0);
 
     const updates: Record<string, any> = {
         turns_count: turnsNext,
@@ -339,7 +335,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
                         'Use short bullets; compact and durable; no quotes.' },
                 ...history.slice(-12),
-                { role: 'user', content: 'Update the running summary now.' }
+                { role: 'user', content: 'Update the running summary now.' },
             ];
 
             const { assistantText: newSummary } = await runpodChat({
@@ -350,11 +346,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const summaryClean = norm(newSummary);
             if (summaryClean) {
                 updates.summary = summaryClean.slice(0, 6000);
-                updates.last_summary_turn = turnsNext;
+                if (hasLastSummaryTurn) (updates as any).last_summary_turn = turnsNext;
             }
         }
-        // core/appendix cadence intentionally disabled until columns exist
-    } catch {}
+    } catch {
+        // best-effort; ignore summary failures
+    }
 
     try {
         await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
@@ -369,5 +366,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         sources,
         raw: data,
     });
-
 }
