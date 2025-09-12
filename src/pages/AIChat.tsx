@@ -117,9 +117,14 @@ const AIChat = () => {
   const [showStream, setShowStream] = useState(false);
 
   // Internal streaming guards to hide CoT until it ends
-  const rawRef = useRef('');                 // full raw streamed text (may contain <think>)
-  const answerStartedRef = useRef(false);    // flips true once we detect end of CoT
+  const rawRef = useRef('');                 // full raw streamed text (may contain CoT)
+  const answerStartedRef = useRef(false);    // flips true once we detect answer segment
   const streamedIndexRef = useRef(0);        // last index of rawRef we've shown to the user
+
+  // Fallback guard: if no <think> detected, we still suppress early fluff
+  const FALLBACK_GUARD_MS = 2500;            // wait up to 2.5s before starting to show tokens
+  const guardTimerRef = useRef<number | null>(null);
+  const guardArmedRef = useRef(false);
 
   // Toggles
   const [mode, setMode] = useState<Mode>('normal');
@@ -179,42 +184,53 @@ const AIChat = () => {
     rawRef.current = '';
     answerStartedRef.current = false;
     streamedIndexRef.current = 0;
+    guardArmedRef.current = false;
+    if (guardTimerRef.current) {
+      window.clearTimeout(guardTimerRef.current);
+      guardTimerRef.current = null;
+    }
 
-    // Streaming context: system + last few turns + user
+    // Streaming context: add a directive that forces a visible boundary
     const streamingMessages = [
       { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
+      { role: 'system' as const, content: 'Do NOT include analysis or chain-of-thought in your answer. If you need to reason, put it INSIDE <think>...</think> and make sure your final answer is AFTER </think>.' },
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
       { role: 'user' as const, content: text },
     ];
     const maxTokens = longMode ? 4096 : 2048;
 
-    // 1) Stream live tokens, but only show tokens after </think>
+    // 1) Stream live tokens, but only show tokens after end-of-reasoning boundary
     await streamChat({
       messages: streamingMessages,
       maxTokens,
 
       onDelta: (chunk) => {
-        // accumulate raw text (which may include <think>)
+        // accumulate raw text (which may include CoT)
         rawRef.current += chunk;
-
         const rawLower = rawRef.current.toLowerCase();
 
-        // If no <think> appears at all, treat everything as answer
-        if (!answerStartedRef.current && !rawLower.includes('<think>')) {
-          answerStartedRef.current = true;
+        // Start a fallback guard once the first token arrives (if we haven't armed it)
+        if (!guardArmedRef.current) {
+          guardArmedRef.current = true;
+          guardTimerRef.current = window.setTimeout(() => {
+            // If no explicit </think> boundary was detected within the guard window,
+            // begin streaming from *now on*, ignoring anything already buffered.
+            if (!answerStartedRef.current) {
+              answerStartedRef.current = true;
+              streamedIndexRef.current = rawRef.current.length; // drop prior “internal” tokens
+            }
+          }, FALLBACK_GUARD_MS) as unknown as number;
         }
 
-        // If we haven't started answer yet, check for end of </think>
+        // 1) Preferred: look for explicit </think>
         if (!answerStartedRef.current) {
           const endIdx = rawLower.lastIndexOf('</think>');
           if (endIdx !== -1) {
             answerStartedRef.current = true;
             // Show any content AFTER </think>
             const after = rawRef.current.slice(endIdx + '</think>'.length);
-            const clean = stripReasoning(after);
-            if (clean) {
-              setStreamText(prev => prev + clean);
-            }
+            const cleanAfter = stripReasoning(after);
+            if (cleanAfter) setStreamText(prev => prev + cleanAfter);
             streamedIndexRef.current = rawRef.current.length;
             scrollToBottom();
             return;
@@ -224,7 +240,7 @@ const AIChat = () => {
           return;
         }
 
-        // Already in answer mode: show only the new part since last time
+        // 2) Already in answer mode: show only the new part since last time
         const newPortion = rawRef.current.slice(streamedIndexRef.current);
         streamedIndexRef.current = rawRef.current.length;
         const cleanDelta = stripReasoning(newPortion);
@@ -235,6 +251,11 @@ const AIChat = () => {
       },
 
       onDone: async (_final, info) => {
+        if (guardTimerRef.current) {
+          window.clearTimeout(guardTimerRef.current);
+          guardTimerRef.current = null;
+        }
+
         // Clean the final answer completely (belt & suspenders)
         const clean = stripReasoning(_final);
 
@@ -273,6 +294,7 @@ const AIChat = () => {
           rawRef.current = '';
           answerStartedRef.current = false;
           streamedIndexRef.current = 0;
+          guardArmedRef.current = false;
           scrollToBottom();
         }
         if (info?.finishReason === 'length') {
@@ -284,12 +306,17 @@ const AIChat = () => {
       },
 
       onError: (e: unknown) => {
+        if (guardTimerRef.current) {
+          window.clearTimeout(guardTimerRef.current);
+          guardTimerRef.current = null;
+        }
         setIsTyping(false);
         setShowStream(false);
         setStreamText('');
         rawRef.current = '';
         answerStartedRef.current = false;
         streamedIndexRef.current = 0;
+        guardArmedRef.current = false;
         toast({
           title: 'Streaming failed',
           description: e instanceof Error ? e.message : 'Please try again.',
@@ -310,6 +337,11 @@ const AIChat = () => {
     rawRef.current = '';
     answerStartedRef.current = false;
     streamedIndexRef.current = 0;
+    guardArmedRef.current = false;
+    if (guardTimerRef.current) {
+      window.clearTimeout(guardTimerRef.current);
+      guardTimerRef.current = null;
+    }
     refreshConvos();
   }
 
@@ -322,7 +354,7 @@ const AIChat = () => {
 
   async function handleRenameConversation() {
     if (!activeId) return;
-    const currentTitle = convos.find((c: any) => c.id === activeId)?.title || '';
+    const currentTitle = (convos as any[]).find((c) => c.id === activeId)?.title || '';
     const newTitle = prompt('Rename conversation', currentTitle);
     if (!newTitle || newTitle === currentTitle) return;
     try {
