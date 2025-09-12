@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, MessageSquare, Lock, Upload, FileText, Download, Plus } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Send, MessageSquare, Lock, Upload, FileText, Download, Plus, ArrowDown, Pencil } from 'lucide-react';import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -8,7 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConversations } from '@/hooks/useConversations';
 import { useMessages } from '@/hooks/useMessages';
-import { saveChat } from '@/lib/api';
+import { saveChat, updateConversationTitle } from '@/lib/api';
 
 type DbMessage = {
   id: string;
@@ -18,6 +17,7 @@ type DbMessage = {
 };
 
 type Mode = 'normal' | 'thinking';
+type Conversation = { id: string; title?: string | null };
 
 /** ---- SSE streaming helper (OpenAI-style) ---- */
 async function streamChat({
@@ -27,9 +27,10 @@ async function streamChat({
                             onError,
                           }: {
   messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
+  maxTokens: number;
   onDelta: (chunk: string) => void;
-  onDone: (full: string) => void;
-  onError: (e: any) => void;
+  onDone: (full: string, info?: { finishReason?: string }) => void;
+  onError: (e: unknown) => void;
 }) {
   try {
     const res = await fetch('/api/ai-stream', {
@@ -39,7 +40,7 @@ async function streamChat({
       body: JSON.stringify({
         model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
         temperature: 0.3,
-        max_tokens: 1024,
+        max_tokens: maxTokens,
         messages,
       }),
     });
@@ -49,6 +50,7 @@ async function streamChat({
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let full = '';
+    let finishReason: string | undefined;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -76,13 +78,15 @@ async function streamChat({
             full += delta;
             onDelta(delta);
           }
+          const fr = json?.choices?.[0]?.finish_reason;
+          if (fr) finishReason = fr;
         } catch {
           // ignore keepalives/bad lines
         }
       }
     }
 
-    onDone(full);
+    onDone(full, { finishReason });
   } catch (e) {
     onError(e);
   }
@@ -109,8 +113,24 @@ const AIChat = () => {
   const { items: msgs, /* loading: msgsLoading */ refresh: refreshMsgs } = useMessages(activeId);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    isNearBottomRef.current = true;
+    setIsNearBottom(true);
+  };
+
+  const handleScroll = () => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const threshold = 100;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    isNearBottomRef.current = near;
+    setIsNearBottom(near);
+  };
   // Only pick default conversation once on mount
   const pickedDefaultRef = useRef(false);
   useEffect(() => {
@@ -121,7 +141,7 @@ const AIChat = () => {
   }, [convos, activeId]);
 
   useEffect(() => {
-    scrollToBottom();
+    if (isNearBottomRef.current) scrollToBottom();
   }, [msgs, isTyping, showStream, streamText]);
 
   async function handleSendMessage() {
@@ -140,15 +160,18 @@ const AIChat = () => {
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
       { role: 'user' as const, content: text },
     ];
+    const maxTokens = longMode ? 4096 : 2048;
 
     // 1) Stream live tokens to UI
     await streamChat({
       messages: streamingMessages,
+      maxTokens,
+
       onDelta: (chunk) => {
         setStreamText(prev => prev + chunk);
-        scrollToBottom();
+        if (isNearBottomRef.current) scrollToBottom();
       },
-      onDone: async (_final) => {
+      onDone: async (_final, info) => {
         // 2) Save conversation with final assistant text
         try {
           const resp = await saveChat({
@@ -160,7 +183,7 @@ const AIChat = () => {
             useInternet,
             usePersona,
             useWorkspace,
-          } as any);
+          });
 
           const { conversationId } = resp || {};
           if (conversationId) {
@@ -170,27 +193,34 @@ const AIChat = () => {
             await refreshConvos();
             if (activeId) await refreshMsgs(activeId);
           }
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error(e);
           toast({
             title: 'Failed to save chat',
-            description: e?.message || 'Please try again.',
+            description: e instanceof Error ? e.message : 'Please try again.',
             variant: 'destructive',
           });
         } finally {
           setIsTyping(false);
           setShowStream(false);
           setStreamText('');
-          scrollToBottom();
+          if (isNearBottomRef.current) scrollToBottom();
+        }
+        if (info?.finishReason === 'length') {
+          toast({
+            title: 'Response truncated',
+            description: 'The model hit the max token limit. Consider enabling Long memory or asking to continue.',
+          });
         }
       },
-      onError: (e) => {
+
+      onError: (e: unknown) => {
         setIsTyping(false);
         setShowStream(false);
         setStreamText('');
         toast({
           title: 'Streaming failed',
-          description: e?.message || 'Please try again.',
+          description: e instanceof Error ? e.message : 'Please try again.',
           variant: 'destructive',
         });
       },
@@ -199,6 +229,11 @@ const AIChat = () => {
 
   function startNewConversation() {
     setActiveId(undefined);
+    refreshMsgs(undefined);
+    setInputMessage('');
+    setStreamText('');
+    setShowStream(false);
+    setIsTyping(false);
     // messages hook will return empty until first send creates a conversation
   }
 
@@ -207,6 +242,22 @@ const AIChat = () => {
       title: `${name} coming soon`,
       description: 'We’ll enable uploads, OCR and export shortly.',
     });
+  }
+  async function handleRenameConversation() {
+    if (!activeId) return;
+    const currentTitle = convos.find((c: any) => c.id === activeId)?.title || '';
+    const newTitle = prompt('Rename conversation', currentTitle);
+    if (!newTitle || newTitle === currentTitle) return;
+    try {
+      await updateConversationTitle(activeId, newTitle);
+      refreshConvos();
+    } catch (e: any) {
+      toast({
+        title: 'Rename failed',
+        description: e?.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    }
   }
 
   return (
@@ -233,7 +284,7 @@ const AIChat = () => {
                   <SelectValue placeholder={convLoading ? 'Loading…' : (activeId ? 'Select conversation' : 'New conversation')} />
                 </SelectTrigger>
                 <SelectContent>
-                  {convos.map((c: any) => (
+                  {(convos as Conversation[]).map((c) => (
                       <SelectItem key={c.id} value={c.id}>
                         {c.title || 'Untitled conversation'}
                       </SelectItem>
@@ -243,7 +294,14 @@ const AIChat = () => {
                   )}
                 </SelectContent>
               </Select>
-
+              <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleRenameConversation}
+                  disabled={!activeId}
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
               <Button variant="outline" onClick={startNewConversation}>
                 <Plus className="h-4 w-4 mr-1" />
                 New chat
@@ -335,8 +393,12 @@ const AIChat = () => {
           {/* Chat Interface */}
           <div className="flex flex-col h-[600px]">
             {/* Chat Messages */}
-            <Card className="flex-1 p-4 mb-4 overflow-hidden">
-              <div className="h-full overflow-y-auto space-y-4">
+            <Card className="flex-1 p-4 mb-4 overflow-hidden relative">
+              <div
+                  ref={messagesContainerRef}
+                  className="h-full overflow-y-auto space-y-4"
+                  onScroll={handleScroll}
+              >
                 {msgs.map((m: DbMessage) => (
                     <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                       <div
@@ -383,6 +445,16 @@ const AIChat = () => {
 
                 <div ref={messagesEndRef} />
               </div>
+              {!isNearBottom && (
+                  <Button
+                      onClick={scrollToBottom}
+                      size="sm"
+                      className="absolute bottom-4 right-4"
+                  >
+                    <ArrowDown className="h-4 w-4 mr-1" />
+                    Jump to latest
+                  </Button>
+              )}
             </Card>
 
             {/* Input Area */}

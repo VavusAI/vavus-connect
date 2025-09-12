@@ -50,3 +50,11 @@ export async function translateText({ text, sourceLang, targetLang, model }:
     if (!r.ok) throw new Error(await r.text());
     return r.json() as Promise<{ output: string }>;
 }
+
+export async function updateConversationTitle(conversationId: string, title: string) {
+    const { error } = await supabase
+        .from('conversations')
+        .update({ title })
+        .eq('id', conversationId);
+    if (error) throw new Error(error.message);
+}

@@ -9,10 +9,12 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
+    const { max_tokens, ...rest } = body || {};
 
-    // Always request a stream
+    // Always request a stream and respect client-provided max_tokens
     const upstreamBody = {
-        ...body,
+        ...rest,
+        max_tokens: max_tokens ?? 4096,
         stream: true,
     };
 

@@ -6,8 +6,10 @@ export function useMessages(conversationId?: string) {
     const [loading, setLoading] = useState(false);
 
     async function refresh(id = conversationId) {
-        if (!id) return;
-        setLoading(true);
+        if (!id) {
+            setItems([]);
+            return;
+        }        setLoading(true);
         const { data, error } = await supabase
             .from('messages')
             .select('*')
@@ -19,9 +21,11 @@ export function useMessages(conversationId?: string) {
     }
 
     useEffect(() => {
-        refresh();
-
-        if (!conversationId) return;
+        if (!conversationId) {
+            setItems([]);
+            return;
+        }
+        refresh(conversationId);
         const ch = supabase
             .channel(`msg-${conversationId}`)
             .on(
