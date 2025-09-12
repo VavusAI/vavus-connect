@@ -21,6 +21,20 @@ export async function sendChat({ conversationId, message, model }:
     if (!r.ok) throw new Error(await r.text());
     return r.json() as Promise<{ conversationId: string; reply: string }>;
 }
+export async function saveChat({ conversationId, message, assistantText, mode, longMode, useInternet, usePersona, useWorkspace }:
+                               { conversationId?: string; message: string; assistantText: string; mode?: string; longMode?: boolean; useInternet?: boolean; usePersona?: boolean; useWorkspace?: boolean; }) {
+    const token = await getAccessToken();
+    const r = await fetch('/api/ai', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ conversationId, message, assistantText, mode, longMode, useInternet, usePersona, useWorkspace })
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json() as Promise<{ conversationId: string }>;
+}
 
 export async function translateText({ text, sourceLang, targetLang, model }:
                                     { text: string; sourceLang?: string; targetLang?: string; model?: string; }) {

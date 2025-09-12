@@ -8,7 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useConversations } from '@/hooks/useConversations';
 import { useMessages } from '@/hooks/useMessages';
-import { sendChat } from '@/lib/api';
+import { saveChat } from '@/lib/api';
 
 type DbMessage = {
   id: string;
@@ -32,10 +32,10 @@ async function streamChat({
   onError: (e: any) => void;
 }) {
   try {
-    const res = await fetch('/api/ai', {
+    const res = await fetch('/api/ai-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // Your /app/api/ai/route.ts forces stream:true upstream
+      // Your /api/ai-stream handler forces stream:true upstream
       body: JSON.stringify({
         model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
         temperature: 0.3,
@@ -149,11 +149,12 @@ const AIChat = () => {
         scrollToBottom();
       },
       onDone: async (_final) => {
-        // 2) Persist with your existing non-streaming API (recomputes server-side)
+        // 2) Save conversation with final assistant text
         try {
-          const resp = await sendChat({
+          const resp = await saveChat({
             conversationId: activeId,
             message: text,
+            assistantText: _final,
             mode,
             longMode,
             useInternet,
@@ -172,8 +173,9 @@ const AIChat = () => {
         } catch (e: any) {
           console.error(e);
           toast({
-            title: 'Saved copy may differ',
-            description: 'We showed you the streamed reply, but saving might have produced a slightly different answer.',
+            title: 'Failed to save chat',
+            description: e?.message || 'Please try again.',
+            variant: 'destructive',
           });
         } finally {
           setIsTyping(false);

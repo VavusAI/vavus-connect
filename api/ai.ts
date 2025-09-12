@@ -108,6 +108,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let {
         conversationId,
         message,
+        assistantText,
         temperature = 0.3,
         system,
         mode = 'normal',
@@ -118,6 +119,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } = body as {
         conversationId?: string;
         message?: string;
+        assistantText?: string;
         temperature?: number;
         system?: string;
         mode?: 'normal' | 'thinking';
@@ -287,76 +289,85 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const turnsNext = Number(conv.turns_count || 0) + 1;
 
-    // ---- real Runpod call (OpenAI-style) ----
-    try {
-        const { data, assistantText } = await runpodChat({
-            url: RUNPOD_CHAT_URL!,
-            token: RUNPOD_CHAT_TOKEN!,
-            body: {
-                model: DEFAULT_MODEL,
-                messages: msgs,
-                temperature: modelTemp,
-                max_tokens: MAX_TOKENS,
-            },
-        });
+    let replyText = assistantText ? String(assistantText) : '';
+    let data: any = null;
 
-        // persist both turns
-        const { error: umErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: conversationId, user_id: userId, role: 'user', content: message,
-        });
-        if (umErr) return bad(res, 500, umErr.message);
-
-        const { error: amErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: conversationId, user_id: userId, role: 'assistant', content: assistantText,
-        });
-        if (amErr) return bad(res, 500, amErr.message);
-
-        // short summary cadence (safe)
-        const doShort = turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY;
-
-        const updates: Record<string, any> = {
-            turns_count: turnsNext,
-            updated_at: new Date().toISOString(),
-        };
-
+    if (!replyText) {
         try {
-            if (doShort) {
-                const sumMsgs: Msg[] = [
-                    { role: 'system', content:
-                            'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
-                            'Use short bullets; compact and durable; no quotes.' },
-                    ...history.slice(-12),
-                    { role: 'user', content: 'Update the running summary now.' }
-                ];
-
-                const { assistantText: newSummary } = await runpodChat({
-                    url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
-                });
-
-                const summaryClean = norm(newSummary);
-                if (summaryClean) {
-                    updates.summary = summaryClean.slice(0, 6000);
-                    updates.last_summary_turn = turnsNext;
-                }
-            }
-            // core/appendix cadence intentionally disabled until columns exist
-        } catch {}
-
-        try {
-            await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
-        } catch {}
-
-        return res.status(200).json({
-            conversationId,
-            reply: assistantText,
-            mode,
-            longMode: longModeEnabled,
-            usedInternet: !!sources.length,
-            sources,
-            raw: data,
-        });
-    } catch (e: any) {
-        return bad(res, 502, e?.message || 'Upstream chat error');
+            const runpodRes = await runpodChat({
+                url: RUNPOD_CHAT_URL!,
+                token: RUNPOD_CHAT_TOKEN!,
+                body: {
+                    model: DEFAULT_MODEL,
+                    messages: msgs,
+                    temperature: modelTemp,
+                    max_tokens: MAX_TOKENS,
+                },
+            });
+            data = runpodRes.data;
+            replyText = runpodRes.assistantText;
+        } catch (e: any) {
+            return bad(res, 502, e?.message || 'Upstream chat error');
+        }
     }
+    // persist both turns
+    const { error: umErr } = await supabaseAdmin.from('messages').insert({
+        conversation_id: conversationId, user_id: userId, role: 'user', content: message,
+    });
+    if (umErr) return bad(res, 500, umErr.message);
+    const { error: amErr } = await supabaseAdmin.from('messages').insert({
+        conversation_id: conversationId, user_id: userId, role: 'assistant', content: replyText,
+    });
+    if (amErr) return bad(res, 500, amErr.message);
+
+    // keep history up to date for summary
+    history.push({ role: 'user', content: message });
+    history.push({ role: 'assistant', content: replyText });
+
+    // short summary cadence (safe)
+    const doShort = turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY;
+
+    const updates: Record<string, any> = {
+        turns_count: turnsNext,
+        updated_at: new Date().toISOString(),
+    };
+
+    try {
+        if (doShort) {
+            const sumMsgs: Msg[] = [
+                { role: 'system', content:
+                        'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
+                        'Use short bullets; compact and durable; no quotes.' },
+                ...history.slice(-12),
+                { role: 'user', content: 'Update the running summary now.' }
+            ];
+
+            const { assistantText: newSummary } = await runpodChat({
+                url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
+                body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
+            });
+
+            const summaryClean = norm(newSummary);
+            if (summaryClean) {
+                updates.summary = summaryClean.slice(0, 6000);
+                updates.last_summary_turn = turnsNext;
+            }
+        }
+        // core/appendix cadence intentionally disabled until columns exist
+    } catch {}
+
+    try {
+        await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
+    } catch {}
+
+    return res.status(200).json({
+        conversationId,
+        reply: replyText,
+        mode,
+        longMode: longModeEnabled,
+        usedInternet: !!sources.length,
+        sources,
+        raw: data,
+    });
+
 }
