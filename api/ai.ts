@@ -1,7 +1,7 @@
 /* eslint-disable import/no-unused-modules */
 // /api/ai.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { callRunpod, bad, allowCORS } from './_runpod.js';
+import { bad, allowCORS } from './_runpod.js'; // callRunpod not needed anymore
 import { supabaseAdmin } from './_utils/supabaseAdmin.js';
 import { requireUser } from './_utils/auth.js';
 
@@ -12,9 +12,9 @@ const WINDOW_TURNS_FAST = 8;
 const WINDOW_TURNS_LONG = 12;
 const SUMMARY_REFRESH_EVERY = 8;
 
-// optional long-memory cadence (disabled since columns are missing)
-const CORE_REFRESH_EVERY = 10;
-const APPENDIX_REFRESH_EVERY = 18;
+// optional long-memory cadence (placeholders – columns not present yet)
+const CORE_REFRESH_EVERY = 10;      // unused placeholder
+const APPENDIX_REFRESH_EVERY = 18;  // unused placeholder
 
 const SEARXNG_URL = process.env.SEARXNG_URL;
 const SEARXNG_TIMEOUT_MS = 8000;
@@ -58,6 +58,47 @@ async function fetchSearx(message: string, cap: number): Promise<WebSource[]> {
     }
 }
 
+// Small helper to call your OpenAI-style Runpod endpoint
+async function runpodChat({
+                              url, token, body,
+                          }: {
+    url: string;
+    token: string;
+    body: {
+        model: string;
+        messages: Msg[];
+        temperature?: number;
+        max_tokens?: number;
+    };
+}) {
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        // first 200 chars help diagnose schema errors (e.g., missing fields)
+        console.error('Runpod error body:', (text || '').slice(0, 200));
+        throw new Error(`Runpod ${r.status}: ${text || 'no body'}`);
+    }
+
+    const data = await r.json();
+    // Accept several possible shapes (OpenAI/vLLM/alt)
+    const assistantText =
+        data?.choices?.[0]?.message?.content ??
+        data?.output?.choices?.[0]?.message?.content ??
+        data?.output?.text ??
+        data?.text ??
+        '';
+
+    return { data, assistantText: String(assistantText ?? '') };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     allowCORS(res);
     if (req.method === 'OPTIONS') return res.status(200).end();
@@ -88,6 +129,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!message) return bad(res, 400, 'message required');
 
+    // ---- envs (fatal if missing) ----
+    const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL?.trim();
+    const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN?.trim();
+    const RUNPOD_CHAT_TIMEOUT = Number(process.env.RUNPOD_CHAT_TIMEOUT || 90000);
+
+    if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
+        const miss = !RUNPOD_CHAT_URL && !RUNPOD_CHAT_TOKEN
+            ? 'RUNPOD_CHAT_URL & RUNPOD_CHAT_TOKEN'
+            : (!RUNPOD_CHAT_URL ? 'RUNPOD_CHAT_URL' : 'RUNPOD_CHAT_TOKEN');
+        return bad(res, 500, `Missing env: ${miss}`);
+    }
+
     // ---- auth (best-effort) ----
     let userId: string | null = null;
     try { userId = requireUser(req).userId; } catch {}
@@ -97,7 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const { data, error } = await supabaseAdmin
             .from('conversations')
             .insert({ user_id: userId })
-            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled') // SAFE: only existing cols
+            .select('id, summary, turns_count, last_summary_turn, long_mode_enabled')
             .single();
         if (error) return bad(res, 500, `DB error: ${error.message}`);
         conversationId = data.id;
@@ -126,7 +179,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
         const { data, error } = await supabaseAdmin
             .from('conversations')
-            .select('summary, turns_count, last_summary_turn, long_mode_enabled') // SAFE: only existing cols
+            .select('summary, turns_count, last_summary_turn, long_mode_enabled')
             .eq('id', conversationId)
             .single();
         if (!error && data) conv = data;
@@ -180,8 +233,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ---- long-memory placeholders (no DB columns yet) ----
-    const coreSummary = '';         // (intentionally empty until columns exist)
-    const appendix = '';            // (intentionally empty until columns exist)
+    const coreSummary = '';   // intentionally empty
+    const appendix = '';      // intentionally empty
 
     // ---- build prompt ----
     const msgs: Msg[] = [];
@@ -232,64 +285,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
     }
 
-    const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL;
-    const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN;
-    const RUNPOD_CHAT_TIMEOUT = Number(process.env.RUNPOD_CHAT_TIMEOUT || 90000);
-
     const turnsNext = Number(conv.turns_count || 0) + 1;
 
-    // ---- stub path if runpod env missing ----
-    if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
-        const assistantText = `(stub) ${message}`;
-
-        const { error: umErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: conversationId, user_id: userId, role: 'user', content: message,
-        });
-        if (umErr) return bad(res, 500, umErr.message);
-
-        const { error: amErr } = await supabaseAdmin.from('messages').insert({
-            conversation_id: conversationId, user_id: userId, role: 'assistant', content: assistantText,
-        });
-        if (amErr) return bad(res, 500, amErr.message);
-
-        await supabaseAdmin.from('conversations').update({
-            updated_at: new Date().toISOString(),
-            turns_count: turnsNext
-        }).eq('id', conversationId);
-
-        return res.status(200).json({
-            conversationId,
-            reply: assistantText,
-            mode,
-            longMode: longModeEnabled,
-            usedInternet: !!sources.length,
-            sources
-        });
-    }
-
-    // ---- real runpod call ----
-    const input = {
-        task: 'chat-completions',
-        model: DEFAULT_MODEL,
-        session_id: conversationId,
-        messages: msgs,
-        temperature: modelTemp,
-        max_tokens: MAX_TOKENS,
-    };
-
+    // ---- real Runpod call (OpenAI-style) ----
     try {
-        const data = await callRunpod({
+        const { data, assistantText } = await runpodChat({
             url: RUNPOD_CHAT_URL!,
             token: RUNPOD_CHAT_TOKEN!,
-            input,
-            timeoutMs: RUNPOD_CHAT_TIMEOUT,
+            body: {
+                model: DEFAULT_MODEL,
+                messages: msgs,
+                temperature: modelTemp,
+                max_tokens: MAX_TOKENS,
+            },
         });
-
-        const assistantText =
-            data?.output?.text ??
-            data?.output?.choices?.[0]?.message?.content ??
-            data?.output?.choices?.[0]?.text ??
-            data?.text ?? '';
 
         // persist both turns
         const { error: umErr } = await supabaseAdmin.from('messages').insert({
@@ -319,20 +328,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     ...history.slice(-12),
                     { role: 'user', content: 'Update the running summary now.' }
                 ];
-                const s = await callRunpod({
+
+                const { assistantText: newSummary } = await runpodChat({
                     url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    input: { task: 'chat-completions', model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
-                    timeoutMs: RUNPOD_CHAT_TIMEOUT,
+                    body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 600 },
                 });
-                const newSummary = norm(s?.output?.text ?? s?.output?.choices?.[0]?.message?.content ?? '');
-                if (newSummary) {
-                    updates.summary = newSummary.slice(0, 6000);
+
+                const summaryClean = norm(newSummary);
+                if (summaryClean) {
+                    updates.summary = summaryClean.slice(0, 6000);
                     updates.last_summary_turn = turnsNext;
                 }
             }
-
-            // NOTE: core/appendix updates intentionally disabled until columns exist.
-            // If/when you add those columns, re-enable the cadence & updates here.
+            // core/appendix cadence intentionally disabled until columns exist
         } catch {}
 
         try {
