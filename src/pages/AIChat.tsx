@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConversations } from '@/hooks/useConversations';
 import { useMessages } from '@/hooks/useMessages';
 import { saveChat, updateConversationTitle } from '@/lib/api';
+import { Loader } from 'lucide-react';
 
 type DbMessage = {
   id: string;
@@ -123,7 +124,7 @@ const AIChat = () => {
   const streamedIndexRef = useRef(0);        // last index of rawRef we've shown to the user
 
   // Fallback guard: if no <think> detected, we still suppress early fluff
-  const FALLBACK_GUARD_MS = 2500;            // wait up to 2.5s before starting to show tokens
+  const FALLBACK_GUARD_MS = 5000;            // Increased to 5s to give more time for tag
   const guardTimerRef = useRef<number | null>(null);
   const guardArmedRef = useRef(false);
 
@@ -201,12 +202,13 @@ const AIChat = () => {
 
     const maxTokens = mode === 'thinking' ? (longMode ? 4096 : 2048) : (longMode ? 2048 : 1024);
 
+    let reasoning = '';
     // Handle thinking mode: First non-streaming reasoning, then stream final
     if (mode === 'thinking') {
       setIsThinking(true);
       try {
         // Non-streaming internal reasoning call to /api/ai
-        const { reply: reasoning } = await fetch('/api/ai', {
+        const { reply } = await fetch('/api/ai', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -221,8 +223,9 @@ const AIChat = () => {
           }),
         }).then(res => res.json());
 
+        reasoning = reply;
         // Now stream final response with reasoning as context
-        streamingMessages.push({ role: 'system', content: `[Internal Reasoning: ${reasoning}]\nNow provide the final answer.` });
+        streamingMessages.push({ role: 'system', content: `[Internal Reasoning: ${reasoning}]\nNow provide the final answer directly, without any additional reasoning or <think> tags.` });
       } catch (e) {
         toast({ title: 'Thinking failed', description: 'Error during reasoning step.', variant: 'destructive' });
         setIsTyping(false);
@@ -240,7 +243,7 @@ const AIChat = () => {
       maxTokens,
 
       onDelta: (chunk) => {
-        // accumulate raw text (which may include CoT)
+        // accumulate raw text (which may contain CoT)
         rawRef.current += chunk;
         const rawLower = rawRef.current.toLowerCase();
 
@@ -568,11 +571,13 @@ const AIChat = () => {
                 {showStream && (
                     <div className="flex justify-start">
                       <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
-                        <p className="text-sm whitespace-pre-wrap">
-                          {answerStartedRef.current
-                              ? (streamText || '…')
-                              : (isThinking ? 'Thinking...' : 'thinking…')}
-                        </p>
+                        <div className="flex items-center">
+                          {(!answerStartedRef.current || isThinking) && <Loader className="h-4 w-4 animate-spin mr-2" />}                          <p className="text-sm whitespace-pre-wrap">
+                            {answerStartedRef.current
+                                ? (streamText || '…')
+                                : (isThinking ? 'Thinking...' : 'thinking…')}
+                          </p>
+                        </div>
                         {!answerStartedRef.current && (
                             <p className="text-xs mt-1 text-muted-foreground">working on a reply</p>
                         )}

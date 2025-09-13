@@ -290,7 +290,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isThinking) {
         msgs.splice(1, 0, {
             role: 'system',
-            content: 'Think internally. Return a clear final answer plus up to 3 compact bullets with key steps/assumptions.',
+            content: 'Think internally inside <think>...</think>. Return a clear final answer plus up to 3 compact bullets with key steps/assumptions AFTER </think>.',
         });
     }
 
