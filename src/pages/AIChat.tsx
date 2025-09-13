@@ -116,7 +116,7 @@ const AIChat = () => {
   // Streaming UI state
   const [streamText, setStreamText] = useState(''); // shows the final answer tokens (no CoT)
   const [showStream, setShowStream] = useState(false);
-  const [isThinking, setIsThinking] = useState(false); // New: for thinking mode indicator
+  const [isThinking, setIsThinking] = useState(false); // for thinking mode indicator
 
   // Internal streaming guards to hide CoT until it ends
   const rawRef = useRef('');                 // full raw streamed text (may contain CoT)
@@ -572,10 +572,11 @@ const AIChat = () => {
                     <div className="flex justify-start">
                       <div className="bg-surface text-foreground border border-border p-3 rounded-lg max-w-[80%]">
                         <div className="flex items-center">
-                          {(!answerStartedRef.current || isThinking) && <Loader className="h-4 w-4 animate-spin mr-2" />}                          <p className="text-sm whitespace-pre-wrap">
+                          <Loader className="h-4 w-4 animate-spin mr-2" />
+                          <p className="text-sm whitespace-pre-wrap">
                             {answerStartedRef.current
                                 ? (streamText || '…')
-                                : (isThinking ? 'Thinking...' : 'thinking…')}
+                                : 'Thinking...'}
                           </p>
                         </div>
                         {!answerStartedRef.current && (

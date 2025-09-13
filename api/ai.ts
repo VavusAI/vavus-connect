@@ -292,6 +292,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             role: 'system',
             content: 'Think internally inside <think>...</think>. Return a clear final answer plus up to 3 compact bullets with key steps/assumptions AFTER </think>.',
         });
+    } else {
+        msgs.splice(1, 0, {
+            role: 'system',
+            content: 'Respond directly with the straight answer. Do not think internally, do not use any reasoning tags, and do not add extra explanations unless asked.',
+        });
     }
 
     const turnsNext = Number(conv.turns_count || 0) + 1;
