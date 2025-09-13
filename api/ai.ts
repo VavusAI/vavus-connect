@@ -131,7 +131,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         useInternet = false,
         usePersona,
         useWorkspace,
-        skipStrip = false, // New: optional flag to skip reasoning strip
+        skipStrip = false, // optional: skip reasoning strip
+        noPersist = false, // <-- NEW: when true, do not save to DB or update summaries
     } = body as {
         conversationId?: string;
         message?: string;
@@ -144,6 +145,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         usePersona?: boolean;
         useWorkspace?: boolean;
         skipStrip?: boolean;
+        noPersist?: boolean;
     };
 
     if (!message) return bad(res, 400, 'message required');
@@ -160,7 +162,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // detect available columns once per cold start
     const convCols = await getConversationColumns();
-    const hasLastSummaryCol = convCols.has('last_summary_turn'); // <-- declare ONCE
+    const hasLastSummaryCol = convCols.has('last_summary_turn');
 
     // auth (best-effort)
     let userId: string | null = null;
@@ -280,24 +282,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
     }
 
+    // ---- mode params (added before user for better adherence) ----
+    const isThinking = mode === 'thinking';
+    const modeContent = isThinking
+        ? 'Start your response immediately with <think>\n and perform step-by-step reasoning inside it. End with </think>. Then output ONLY the final answer without any extra text or bullets.'
+        : 'If you need to reason step-by-step, enclose it in <think> ... </think>. Otherwise, respond directly with only the final answer. Do not add extra text or formatting unless asked.';
+    msgs.push({ role: 'system', content: modeContent });
+
     // ---- user message ----
     msgs.push({ role: 'user', content: message });
 
-    // ---- mode params ----
-    const isThinking = mode === 'thinking';
+    // ---- params ----
     const MAX_TOKENS = isThinking ? THINK_MAX_TOKENS : FAST_MAX_TOKENS;
     const modelTemp = isThinking ? 0.2 : temperature; // Lower for better tag adherence in thinking
-    if (isThinking) {
-        msgs.splice(1, 0, {
-            role: 'system',
-            content: 'Start your response immediately with <think>\n and perform step-by-step reasoning inside it. End with </think>. Then output ONLY the final answer without any extra text or bullets.',
-        });
-    } else {
-        msgs.splice(1, 0, {
-            role: 'system',
-            content: 'Respond directly with only the final answer. Do not reason, explain, or add any extra text unless explicitly asked. No tags or formatting.',
-        });
-    }
 
     const turnsNext = Number(conv.turns_count || 0) + 1;
 
@@ -318,87 +315,105 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
     }
 
-    // Sanitize: remove chain-of-thought before saving
+    // Sanitize: remove chain-of-thought before saving (unless explicitly skipped)
     replyText = stripReasoning(replyText, skipStrip);
 
-    // ----- persist both turns -----
-    const { error: umErr } = await supabaseAdmin.from('messages').insert({
-        conversation_id: conversationId, user_id: userId, role: 'user', content: message,
-    });
-    if (umErr) return bad(res, 500, umErr.message);
+    // ----- persist both turns (skip if noPersist) -----
+    if (!noPersist) {
+        const { error: umErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'user', content: message,
+        });
+        if (umErr) return bad(res, 500, umErr.message);
 
-    const { error: amErr } = await supabaseAdmin.from('messages').insert({
-        conversation_id: conversationId, user_id: userId, role: 'assistant', content: replyText,
-    });
-    if (amErr) return bad(res, 500, amErr.message);
+        const { error: amErr } = await supabaseAdmin.from('messages').insert({
+            conversation_id: conversationId, user_id: userId, role: 'assistant', content: replyText,
+        });
+        if (amErr) return bad(res, 500, amErr.message);
+    }
 
-    // update local history for summary
-    history.push({ role: 'user', content: message });
-    history.push({ role: 'assistant', content: replyText });
+    // update local history for summary (only if we persisted)
+    if (!noPersist) {
+        history.push({ role: 'user', content: message });
+        history.push({ role: 'assistant', content: replyText });
+    }
 
     // ---- short summary cadence (auto: column-aware) ----
-    const useSummary = turnsNext > 4; // No summary for first 4 messages
-    const doShort = useSummary && (hasLastSummaryCol
-        ? (turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY)
-        : (turnsNext % SUMMARY_REFRESH_EVERY === 0));
+    if (!noPersist) {
+        const useSummary = turnsNext > 4; // No summary for first 4 messages
+        const doShort = useSummary && (hasLastSummaryCol
+            ? (turnsNext - Number(conv.last_summary_turn || 0) >= SUMMARY_REFRESH_EVERY)
+            : (turnsNext % SUMMARY_REFRESH_EVERY === 0));
 
-    const updates: Record<string, any> = {
-        turns_count: turnsNext,
-        updated_at: new Date().toISOString(),
-    };
+        const updates: Record<string, any> = {
+            turns_count: turnsNext,
+            updated_at: new Date().toISOString(),
+        };
 
-    try {
-        if (doShort) {
-            const sumMsgs: Msg[] = [
-                { role: 'system', content:
-                        'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
-                        'Use short bullets; compact and durable; no quotes.' },
-                ...history.slice(-recentTurns),
-                { role: 'user', content: 'Update the running summary now.' },
-            ];
-
-            const { assistantText: newSummary } = await runpodChat({
-                url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: longModeEnabled ? 1200 : 600 },
-            });
-
-            const summaryCleanRaw = norm(newSummary);
-            const summaryClean = stripReasoning(summaryCleanRaw);
-            if (summaryClean) {
-                updates.summary = summaryClean.slice(0, longModeEnabled ? 12000 : 6000);
-                if (hasLastSummaryCol) (updates as any).last_summary_turn = turnsNext;
-            }
-        }
-    } catch {
-        // best-effort; ignore summary failures
-    }
-
-    // ---- persona summarization (best-effort, after 5 convos) ----
-    try {
-        if (userId && !personaSummary && (await supabaseAdmin.from('conversations').select('id', { count: 'exact' }).eq('user_id', userId)).count === 5) {
-            const { data: allConvs } = await supabaseAdmin.from('conversations').select('summary').eq('user_id', userId);
-            if (allConvs && allConvs.length) {
+        try {
+            if (doShort) {
                 const sumMsgs: Msg[] = [
-                    { role: 'system', content: 'Summarize the user\'s persona from these conversation summaries: traits, preferences, goals. Use short bullets; 100-200 words.' },
-                    { role: 'user', content: allConvs.map(c => norm((c as any).summary)).filter(Boolean).join('\n\n') },
+                    { role: 'system', content:
+                            'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. ' +
+                            'Use short bullets; compact and durable; no quotes.' },
+                    ...history.slice(-recentTurns),
+                    { role: 'user', content: 'Update the running summary now.' },
                 ];
-                const { assistantText: newPersona } = await runpodChat({
+
+                const { assistantText: newSummary } = await runpodChat({
                     url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
-                    body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 300 },
+                    body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: longModeEnabled ? 1200 : 600 },
                 });
-                const personaClean = stripReasoning(norm(newPersona));
-                if (personaClean) {
-                    await supabaseAdmin.from('user_memory').upsert({ user_id: userId, persona_summary: personaClean.slice(0, 2000) });
+
+                const summaryCleanRaw = norm(newSummary);
+                const summaryClean = stripReasoning(summaryCleanRaw);
+                if (summaryClean) {
+                    updates.summary = summaryClean.slice(0, longModeEnabled ? 12000 : 6000);
+                    if (hasLastSummaryCol) (updates as any).last_summary_turn = turnsNext;
                 }
             }
+        } catch {
+            // best-effort; ignore summary failures
         }
-    } catch {
-        // best-effort; ignore
-    }
 
-    try {
-        await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
-    } catch {}
+        // ---- persona summarization (best-effort, after 5 convos) ----
+        try {
+            if (userId && !personaSummary) {
+                const convCountRes = await supabaseAdmin
+                    .from('conversations')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('user_id', userId);
+                const total = convCountRes.count ?? 0;
+                if (total === 5) {
+                    const { data: allConvs } = await supabaseAdmin
+                        .from('conversations')
+                        .select('summary')
+                        .eq('user_id', userId);
+                    if (allConvs && allConvs.length) {
+                        const sumMsgs: Msg[] = [
+                            { role: 'system', content: 'Summarize the user\'s persona from these conversation summaries: traits, preferences, goals. Use short bullets; 100-200 words.' },
+                            { role: 'user', content: allConvs.map(c => norm((c as any).summary)).filter(Boolean).join('\n\n') },
+                        ];
+                        const { assistantText: newPersona } = await runpodChat({
+                            url: RUNPOD_CHAT_URL!, token: RUNPOD_CHAT_TOKEN!,
+                            body: { model: DEFAULT_MODEL, messages: sumMsgs, temperature: 0.1, max_tokens: 300 },
+                        });
+                        const personaClean = stripReasoning(norm(newPersona));
+                        if (personaClean) {
+                            await supabaseAdmin
+                                .from('user_memory')
+                                .upsert({ user_id: userId, persona_summary: personaClean.slice(0, 2000) });
+                        }
+                    }
+                }
+            }
+        } catch {
+            // best-effort; ignore
+        }
+
+        try {
+            await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
+        } catch {}
+    }
 
     return res.status(200).json({
         conversationId,

@@ -27,7 +27,7 @@ function stripReasoning(s: string): string {
   let out = s;
   // Remove <think> ... </think>
   out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // Remove fenced reasoning blocks like ```thinking ...``` or ```reasoning ...```
+  // Remove fenced reasoning blocks like ```thinking
   out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
   // Clean stray tags just in case
   out = out.replace(/<\/?think>/gi, '');
@@ -124,7 +124,6 @@ const AIChat = () => {
   const streamedIndexRef = useRef(0);        // last index of rawRef we've shown to the user
 
   // Fallback guard: if no <think> detected, we still suppress early fluff
-  const FALLBACK_GUARD_MS = 5000;            // Increased to 5s to give more time for tag
   const guardTimerRef = useRef<number | null>(null);
   const guardArmedRef = useRef(false);
 
@@ -192,21 +191,30 @@ const AIChat = () => {
       guardTimerRef.current = null;
     }
 
-    // Streaming context: add a directive that forces a visible boundary
-    const streamingMessages = [
+    // Guard time based on mode (short for normal/final, long for thinking if needed)
+    let guardMs = mode === 'normal' ? 500 : 5000;
+
+    // Streaming context: base prompt
+    let streamingMessages = [
       { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
       { role: 'user' as const, content: text },
     ];
 
+    if (mode === 'normal') {
+      streamingMessages.splice(1, 0, {
+        role: 'system' as const,
+        content: 'If you need to reason step-by-step, enclose it in <think> ... </think>. Otherwise, respond directly with only the final answer. Do not add extra text or formatting unless asked.',
+      });
+    }
+
     const maxTokens = mode === 'thinking' ? (longMode ? 4096 : 2048) : (longMode ? 2048 : 1024);
 
-    let reasoning = '';
-    // Handle thinking mode: First non-streaming reasoning, then stream final
+    // Thinking mode: do a non-persist reasoning pass, then stream the final answer
     if (mode === 'thinking') {
       setIsThinking(true);
       try {
-        // Non-streaming internal reasoning call to /api/ai
+        // Non-persist internal reasoning call to /api/ai
         const { reply } = await fetch('/api/ai', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -218,20 +226,27 @@ const AIChat = () => {
             useInternet,
             usePersona,
             useWorkspace,
-            skipStrip: true, // Keep reasoning for context
+            skipStrip: true,     // return full reasoning
+            noPersist: true,     // <-- do not save this step
           }),
         }).then(res => res.json());
 
-        reasoning = reply;
-        // Now stream final response with reasoning as context
-        streamingMessages.push({ role: 'system', content: `[Internal Reasoning: ${reasoning}]\nNow provide the final answer directly, without any additional reasoning or <think> tags.` });
+        // Strip any tags before embedding back as context
+        const reasoning = stripReasoning(reply || '');
+        streamingMessages.push({
+          role: 'system',
+          content: `[Internal Reasoning]\n${reasoning}\n\nNow provide ONLY the final answer in plain language. Do not include <think> or any analysis.`,
+        });
+
+        // For the final stream in thinking, shorten guard
+        guardMs = 500;
       } catch (e) {
         toast({ title: 'Thinking failed', description: 'Error during reasoning step.', variant: 'destructive' });
         setIsTyping(false);
         setShowStream(false);
         setIsThinking(false);
         return;
-      } // No finally - keep isThinking true during streaming for persistent spinner
+      }
     }
 
     // 1) Stream live tokens, but only show tokens after end-of-reasoning boundary
@@ -249,12 +264,17 @@ const AIChat = () => {
           guardArmedRef.current = true;
           guardTimerRef.current = window.setTimeout(() => {
             // If no explicit </think> boundary was detected within the guard window,
-            // begin streaming from *now on*, ignoring anything already buffered.
+            // assume no thinking and flush the entire buffer as the answer.
             if (!answerStartedRef.current) {
               answerStartedRef.current = true;
-              streamedIndexRef.current = rawRef.current.length; // drop prior “internal” tokens
+              const newPortion = rawRef.current.slice(0);
+              const cleanDelta = stripReasoning(newPortion);
+              if (cleanDelta) setStreamText(prev => prev + cleanDelta);
+              streamedIndexRef.current = rawRef.current.length;
+              setIsThinking(false);
+              scrollToBottom();
             }
-          }, FALLBACK_GUARD_MS) as unknown as number;
+          }, guardMs) as unknown as number;
         }
 
         // 1) Preferred: look for explicit </think>
