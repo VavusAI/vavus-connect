@@ -195,7 +195,6 @@ const AIChat = () => {
     // Streaming context: add a directive that forces a visible boundary
     const streamingMessages = [
       { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
-      { role: 'system' as const, content: 'Do NOT include analysis or chain-of-thought in your answer. If you need to reason, put it INSIDE <think>...</think> and make sure your final answer is AFTER </think>.' },
       ...msgs.slice(-6).map((m) => ({ role: m.role, content: m.content } as const)),
       { role: 'user' as const, content: text },
     ];
@@ -232,9 +231,7 @@ const AIChat = () => {
         setShowStream(false);
         setIsThinking(false);
         return;
-      } finally {
-        setIsThinking(false);
-      }
+      } // No finally - keep isThinking true during streaming for persistent spinner
     }
 
     // 1) Stream live tokens, but only show tokens after end-of-reasoning boundary
@@ -270,6 +267,7 @@ const AIChat = () => {
             const cleanAfter = stripReasoning(after);
             if (cleanAfter) setStreamText(prev => prev + cleanAfter);
             streamedIndexRef.current = rawRef.current.length;
+            setIsThinking(false); // Hide spinner once answer starts
             scrollToBottom();
             return;
           }
@@ -333,6 +331,7 @@ const AIChat = () => {
           answerStartedRef.current = false;
           streamedIndexRef.current = 0;
           guardArmedRef.current = false;
+          setIsThinking(false);
           scrollToBottom();
         }
         if (info?.finishReason === 'length') {
@@ -355,6 +354,7 @@ const AIChat = () => {
         answerStartedRef.current = false;
         streamedIndexRef.current = 0;
         guardArmedRef.current = false;
+        setIsThinking(false);
         toast({
           title: 'Streaming failed',
           description: e instanceof Error ? e.message : 'Please try again.',
