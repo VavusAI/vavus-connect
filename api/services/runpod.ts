@@ -2,15 +2,15 @@
 import { Msg } from './prompt.js';
 import { callRunpod, RunpodError } from '../_runpod.js';
 
-export async function runpodChat({
-                                     model, messages, temperature, max_tokens, logger,
-                                 }: {
+type Args = {
     model: string;
     messages: Msg[];
     temperature?: number;
     max_tokens?: number;
     logger?: (info: { url: string; status?: number; body?: string; error?: any }) => void;
-}) {
+};
+
+export async function runpodChat({ model, messages, temperature, max_tokens, logger }: Args) {
     const url = process.env.RUNPOD_CHAT_URL?.trim();
     const token = process.env.RUNPOD_CHAT_TOKEN?.trim();
     if (!url || !token) {
@@ -26,8 +26,7 @@ export async function runpodChat({
             'content-type': 'application/json',
             authorization: `Bearer ${token}`,
         };
-        let resp: Response;
-        let text: string;
+        let resp: Response, text: string;
         try {
             resp = await fetch(url, {
                 method: 'POST',
@@ -45,12 +44,12 @@ export async function runpodChat({
         const data: any = text ? JSON.parse(text) : {};
         const assistantText =
             data?.choices?.[0]?.message?.content ??
-            data?.choices?.[0]?.delta?.content ?? // just in case
+            data?.choices?.[0]?.delta?.content ?? // defensive
             data?.text ?? '';
         return { data, assistantText: String(assistantText ?? '') };
     }
 
-    // Otherwise, treat it as a Runpod "runsync" worker and wrap in { input: ... }
+    // Otherwise treat as Runpod "runsync" worker (expects { input: ... })
     const payload = { model, messages, temperature, max_tokens };
     const data: any = await callRunpod({ url, token, input: payload, logger });
     const assistantText =

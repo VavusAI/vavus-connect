@@ -1,4 +1,6 @@
 // /api/_runpod.ts
+export { runpodChat } from './services/runpod.js';
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 type RunpodReq = {
