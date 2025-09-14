@@ -1,6 +1,6 @@
 /* eslint-disable import/no-unused-modules */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { allowCORS, bad } from './_runpod.js';
+import { allowCORS, bad, logRunpod } from './_runpod.js';
 import { requireUser } from './_utils/auth.js';
 import { supabaseAdmin } from './_utils/supabaseAdmin.js';
 import { assemblePrompt, stripReasoning, Msg } from './services/prompt.js';
@@ -84,6 +84,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 messages: promptMsgs,
                 temperature: temp,
                 max_tokens: maxTokens,
+                logger: logRunpod,
             });
             data = runRes.data;
             replyText = runRes.assistantText;

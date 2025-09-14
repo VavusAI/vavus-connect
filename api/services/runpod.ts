@@ -1,11 +1,12 @@
 import { Msg } from './prompt.js';
 import { callRunpod, RunpodError } from '../_runpod.js';
 
-export async function runpodChat({ model, messages, temperature, max_tokens }:{
+export async function runpodChat({ model, messages, temperature, max_tokens, logger }:{
     model: string;
     messages: Msg[];
     temperature?: number;
     max_tokens?: number;
+    logger?: (info: { url: string; status?: number; body?: string; error?: any }) => void;
 }) {
     const url = process.env.RUNPOD_CHAT_URL?.trim();
     const token = process.env.RUNPOD_CHAT_TOKEN?.trim();
@@ -17,8 +18,7 @@ export async function runpodChat({ model, messages, temperature, max_tokens }:{
     }
 
     try {
-        const data = await callRunpod({ url, token, input: { model, messages, temperature, max_tokens } });
-        const assistantText =
+        const data = await callRunpod({ url, token, input: { model, messages, temperature, max_tokens }, logger });        const assistantText =
             data?.choices?.[0]?.message?.content ??
             data?.output?.choices?.[0]?.message?.content ??
             data?.output?.text ??

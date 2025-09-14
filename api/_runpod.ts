@@ -57,10 +57,12 @@ export async function callRunpod({
             throw new RunpodError({ status: res.status, body: text, url });
         }
 
-        return await res.json(); // Runpod "runsync" typically returns { output: ... }
-    } catch (e: any) {
+        const json = await res.json();
+        logger?.({ url, status: res.status, body: JSON.stringify(json) });
+        return json; // Runpod "runsync" typically returns { output: ... }
+         } catch (e: any) {
         if (e.name === 'AbortError') {
-            const info = { url, error: 'aborted' };
+            const info = { url, status: 0, body: 'aborted' };
             console.error('Runpod request aborted', info);
             logger?.(info);
             throw new RunpodError({ status: 0, body: 'aborted', url });
@@ -69,6 +71,9 @@ export async function callRunpod({
     } finally {
         clearTimeout(to);
     }
+}
+export function logRunpod(info: { url: string; status?: number; body?: string; error?: any }) {
+    console.log('Runpod', info);
 }
 
 export function bad(res: VercelResponse, code: number, msg: string) {

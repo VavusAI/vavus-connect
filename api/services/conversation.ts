@@ -1,4 +1,5 @@
 import { runpodChat } from './runpod.js';
+import { logRunpod } from '../_runpod.js';
 import { stripReasoning, norm, Msg } from './prompt.js';
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
@@ -72,6 +73,7 @@ export async function summarize(history: Msg[], longMode: boolean, chat = runpod
         messages: sumMsgs,
         temperature: 0.1,
         max_tokens: longMode ? 1200 : 600,
+        logger: logRunpod,
     });
     return stripReasoning(norm(assistantText));
 }

@@ -1,6 +1,6 @@
 // /api/translate.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { callRunpod, bad, allowCORS } from './_runpod.js';
+import { callRunpod, bad, allowCORS, logRunpod } from './_runpod.js';
 import { supabaseAdmin } from './_utils/supabaseAdmin.js';
 import { requireUser } from './_utils/auth.js';
 
@@ -81,6 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             token: RUNPOD_TRANSLATE_TOKEN!,
             input,
             timeoutMs: RUNPOD_TRANSLATE_TIMEOUT,
+            logger: logRunpod,
         });
 
         const output =
