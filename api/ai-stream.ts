@@ -2,7 +2,7 @@
 /* eslint-disable import/no-unused-modules */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-export const config = { runtime: 'nodejs20.x' };
+export const config = { runtime: 'nodejs' };
 
 function setSSE(res: VercelResponse) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
