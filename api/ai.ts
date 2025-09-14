@@ -1,114 +1,101 @@
 /* eslint-disable import/no-unused-modules */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { allowCORS, bad, logRunpod } from './_runpod.js';
-import { requireUser } from './_utils/auth.js';
-import { supabaseAdmin } from './_utils/supabaseAdmin.js';
-import { assemblePrompt, stripReasoning, Msg } from './services/prompt.js';
-import { runpodChat } from './services/runpod.js';
-import { ensureConversation, persistTurn, maybeSummarize } from './services/conversation.js';
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
-const FAST_MAX_TOKENS = 1024;
-const THINK_MAX_TOKENS = 2048;
+export const config = { runtime: 'nodejs' };
+
+function safeParseJSON<T = any>(t: string): T | null {
+    try { return JSON.parse(t); } catch { return null; }
+}
+function stripHeuristics(s: string) {
+    if (!s) return s;
+    let out = s;
+    out = out.replace(/```(?:think|thinking|reasoning)[\s\S]*?```/gi, '');
+    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    out = out.replace(/<\|think\|>[\s\S]*?(?=<\|assistant\|>)/gi, '');
+    out = out.replace(/^\s*reasoning:\s*[\s\S]*?(?=^\S|\Z)/gim, '');
+    out = out.replace(
+        /^\s*(okay|so|hmm|i'?m|let'?s|i think|i will|i should|the user|they said)\b[\s\S]*?(?=\n{2,}|$)/i,
+        ''
+    );
+    return out.trim();
+}
+function extractFinalFromOpenAI(rawJson: string): string {
+    const data = safeParseJSON<any>(rawJson) ?? {};
+    const output = data?.output ?? data;
+
+    let content: any =
+        output?.choices?.[0]?.message?.content ??
+        output?.choices?.[0]?.delta?.content ??
+        output?.text ?? '';
+
+    if (typeof content === 'string') {
+        const inner = safeParseJSON<any>(content);
+        if (inner && typeof inner.final === 'string' && inner.final.trim()) {
+            return inner.final.trim();
+        }
+        const t = content.match(/<final>([\s\S]*?)<\/final>/i);
+        if (t && t[1]?.trim()) return t[1].trim();
+        return stripHeuristics(content);
+    }
+
+    if (content && typeof content === 'object' && typeof content.final === 'string') {
+        return content.final.trim();
+    }
+
+    const embedded = (rawJson.match(/\{[\s\S]*\}/) || [])[0];
+    const inner2 = embedded ? safeParseJSON<any>(embedded) : null;
+    if (inner2 && typeof inner2.final === 'string' && inner2.final.trim()) {
+        return inner2.final.trim();
+    }
+    return '';
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    allowCORS(res);
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return bad(res, 405, 'Use POST');
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    let {
-        conversationId,
-        message,
-        assistantText,
-        temperature = 0.3,
-        system,
-        mode = 'normal',
-        longMode,
-        useInternet = false,
-        usePersona,
-        useWorkspace,
-        skipStrip = false,
-        noPersist = false,
-    } = body as any;
+    const url = (process.env.RUNPOD_CHAT_URL || '').replace(/\/+$/, '');
+    const token = process.env.RUNPOD_CHAT_TOKEN || '';
+    if (!url || !token) return res.status(500).json({ error: 'Missing RUNPOD_CHAT_URL or RUNPOD_CHAT_TOKEN' });
 
-    if (!message) return bad(res, 400, 'message required');
+    const { conversationId, message } = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    if (!message || typeof message !== 'string') return res.status(400).json({ error: 'message is required' });
 
-    let userId: string | null = null;
-    try { userId = requireUser(req).userId; } catch {}
+    const messages = [
+        { role: 'system', content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
+        { role: 'user', content: message },
+        {
+            role: 'system',
+            content:
+                'Reply ONLY as a single JSON object with this exact shape and nothing else:\n' +
+                '{ "final": "<the final answer shown to the user>" }',
+        },
+    ] as const;
 
-    const { conversationId: convId, conv, history } = await ensureConversation(conversationId, userId);
+    try {
+        const upstream = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+                model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
+                messages,
+                temperature: 0.3,
+                stream: false,
+                response_format: { type: 'json_object' },
+            }),
+        });
 
-    if (typeof longMode === 'boolean') {
-        await supabaseAdmin.from('conversations').update({ long_mode_enabled: longMode }).eq('id', convId);
+        const raw = await upstream.text();
+        if (!upstream.ok) return res.status(upstream.status).send(raw || `Upstream ${upstream.status}`);
+
+        const assistantText = extractFinalFromOpenAI(raw);
+
+        // TODO: insert into Supabase (persist conversation/messages)
+        return res.status(200).json({ conversationId: conversationId ?? null, reply: assistantText });
+    } catch (e: any) {
+        return res.status(500).json({ error: String(e?.message || e) });
     }
-    const longModeEnabled = typeof longMode === 'boolean' ? longMode : !!conv.long_mode_enabled;
-
-    let personaSummary = '', workspaceNote = '', settings: any = {};
-    if (userId) {
-        try {
-            const [{ data: mem }, { data: ws }, { data: stg }] = await Promise.all([
-                supabaseAdmin.from('user_memory').select('persona_summary').eq('user_id', userId).single(),
-                supabaseAdmin.from('workspace_memory').select('note').eq('user_id', userId).single(),
-                supabaseAdmin.from('user_settings').select('use_persona, use_workspace').eq('user_id', userId).single(),
-            ]);
-            personaSummary = mem?.persona_summary || '';
-            workspaceNote = ws?.note || '';
-            settings = stg || {};
-        } catch {}
-    }
-    const persona = (typeof usePersona === 'boolean' ? usePersona : !!settings.use_persona) ? personaSummary : '';
-    const workspace = (typeof useWorkspace === 'boolean' ? useWorkspace : !!settings.use_workspace) ? workspaceNote : '';
-
-    const { messages: promptMsgs, sources, isThinking } = await assemblePrompt({
-        message,
-        system,
-        history,
-        persona,
-        workspace,
-        summary: conv.summary,
-        mode,
-        useInternet,
-        longMode: longModeEnabled,
-    });
-
-    const maxTokens = (isThinking ? THINK_MAX_TOKENS : FAST_MAX_TOKENS) * (longModeEnabled ? 2 : 1);
-    const temp = isThinking ? 0.2 : temperature;
-
-    let replyText = assistantText ? String(assistantText) : '';
-    let data: any = null;
-    if (!replyText) {
-        try {
-            const runRes = await runpodChat({
-                model: DEFAULT_MODEL,
-                messages: promptMsgs,
-                temperature: temp,
-                max_tokens: maxTokens,
-                logger: logRunpod,
-            });
-            data = runRes.data;
-            replyText = runRes.assistantText;
-        } catch (e: any) {
-            return bad(res, 502, e?.message || 'Upstream chat error');
-        }
-    }
-
-    replyText = stripReasoning(replyText, skipStrip);
-
-    if (!noPersist) {
-        await persistTurn(convId, userId, message, replyText);
-        history.push({ role: 'user', content: message }, { role: 'assistant', content: replyText } as Msg);
-        const turnsNext = Number(conv.turns_count || 0) + 1;
-        await maybeSummarize(convId, history, turnsNext, longModeEnabled);
-    }
-
-    return res.status(200).json({
-        conversationId: convId,
-        reply: replyText,
-        mode,
-        longMode: longModeEnabled,
-        usedInternet: !!sources.length,
-        sources,
-        raw: data,
-    });
 }
