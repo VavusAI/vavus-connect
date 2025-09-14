@@ -5,16 +5,31 @@ type RunpodReq = {
     input: any; // model-specific payload
 };
 
+export class RunpodError extends Error {
+    status: number;
+    body: string;
+    url: string;
+
+    constructor({ status, body, url }: { status: number; body: string; url: string }) {
+        super(`Runpod ${status}: ${body}`);
+        this.status = status;
+        this.body = body;
+        this.url = url;
+    }
+}
+
 export async function callRunpod({
                                      url,
                                      token,
                                      input,
                                      timeoutMs = 90000,
+                                     logger,
                                  }: {
     url: string;
     token?: string;   // now optional
     input: any;
     timeoutMs?: number;
+    logger?: (info: { url: string; status?: number; body?: string; error?: any }) => void;
 }) {
     const controller = new AbortController();
     const to = setTimeout(() => controller.abort(), timeoutMs);
@@ -35,11 +50,22 @@ export async function callRunpod({
         });
 
         if (!res.ok) {
-            const text = await res.text();
-            throw new Error(`Runpod error ${res.status}: ${text}`);
+            const text = await res.text().catch(() => '');
+            const info = { url, status: res.status, body: text };
+            console.error('Runpod request failed', info);
+            logger?.(info);
+            throw new RunpodError({ status: res.status, body: text, url });
         }
 
         return await res.json(); // Runpod "runsync" typically returns { output: ... }
+    } catch (e: any) {
+        if (e.name === 'AbortError') {
+            const info = { url, error: 'aborted' };
+            console.error('Runpod request aborted', info);
+            logger?.(info);
+            throw new RunpodError({ status: 0, body: 'aborted', url });
+        }
+        throw e;
     } finally {
         clearTimeout(to);
     }

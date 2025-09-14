@@ -1,73 +1,60 @@
-# Welcome to your Lovable project
+# Vavus Connect
 
-## Project info
+A chat interface powered by VAVUS AI with streaming and non‑streaming endpoints.
 
-**URL**: https://lovable.dev/projects/1b3cef3e-5184-4001-b6de-36d8825566e3
+## Prerequisites
 
-## How can I edit this code?
+Set the following environment variables before starting the app:
 
-There are several ways of editing your application.
+- `RUNPOD_CHAT_URL` – Runpod endpoint for chat completion requests
+- `RUNPOD_CHAT_TOKEN` – Bearer token for the Runpod endpoint
+- `SEARXNG_URL` – Optional: SearxNG instance for web search results
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` – Client‑side Supabase credentials
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_JWT_SECRET` – Server‑side Supabase credentials
 
-**Use Lovable**
+## Development
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/1b3cef3e-5184-4001-b6de-36d8825566e3) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Streaming vs. Non‑Streaming API
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+- `/api/ai-stream` streams tokens using Server Sent Events (SSE). The React UI reads this stream to render tokens as they arrive.
+- `/api/ai` is a traditional JSON endpoint. The UI calls it for non‑streaming tasks such as the internal reasoning step in **thinking** mode and to persist messages.
 
-**Use GitHub Codespaces**
+## Chat UI
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+![Chat interface screenshot](public/images/chat-interface.png)
 
-## What technologies are used for this project?
+A GIF preview is also available:
 
-This project is built with:
+![Chat interface animation](public/images/chat-interface.gif)
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Troubleshooting
 
-## How can I deploy this project?
+- **CORS errors** – Ensure your deployment domain is allowed by the Runpod endpoint and Supabase project.
+- **Missing environment variables** – Check that all variables listed in the prerequisites are defined in your deployment environment. Missing values will result in runtime 500 errors.
+- ## Streaming API
 
-Simply open [Lovable](https://lovable.dev/projects/1b3cef3e-5184-4001-b6de-36d8825566e3) and click on Share -> Publish.
+The `/api/ai-stream` endpoint returns a Server-Sent Events (SSE) stream.
+Clients should register handlers for the following events:
 
-## Can I connect a custom domain to my Lovable project?
+- `onmessage` receives incremental data frames from the model.
+- `onerror` fires when the server emits an `event: error` payload or the
+  connection drops. Reconnect or surface the error to users as needed.
+- Listen for the custom `end` event to know when the stream has finished:
 
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+```ts
+const es = new EventSource('/api/ai-stream');
+es.onmessage = (ev) => {
+  // handle model tokens here
+};
+es.onerror = (ev) => {
+  // handle errors or reconnect
+};
+es.addEventListener('end', () => {
+  es.close();
+});
+```

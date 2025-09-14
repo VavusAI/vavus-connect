@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "outDir": "./dist",
+    "moduleResolution": "node",
+    "rootDir": "."
+  },
+  "include": ["api/services/**/*.ts", "api/services/__tests__/**/*.ts"]
+}
