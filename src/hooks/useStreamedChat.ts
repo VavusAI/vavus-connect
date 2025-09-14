@@ -16,6 +16,16 @@ type UseStreamedChatOpts = {
     onNewConversation?: (id: string) => void;
 };
 
+/** Strip chain-of-thought / reasoning markers */
+function stripReasoning(s: string): string {
+    if (!s) return s;
+    let out = s;
+    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
+    out = out.replace(/<\/?think>/gi, '');
+    return out.trim();
+}
+
 /** ---- SSE streaming helper that talks to /api/ai-stream ---- */
 async function streamChat({
                               messages,
@@ -94,10 +104,11 @@ async function streamChat({
 }
 
 /**
- * Streaming hook that mirrors your current AIChat flow:
+ * Streaming hook:
  * - streams from /api/ai-stream
- * - then saves via /api/ai (saveChat)
+ * - saves via /api/ai (saveChat)
  * - refreshes history and adopts returned conversationId if new
+ * - hides CoT until first visible token (or guard timeout)
  */
 export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOpts = {}) {
     const { items, refresh } = useMessages(conversationId);
@@ -105,6 +116,13 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
 
     const [streamText, setStreamText] = useState('');
     const [isThinking, setIsThinking] = useState(false);
+
+    // CoT guard state
+    const rawRef = useRef('');              // raw streamed text
+    const answerStartedRef = useRef(false); // flips when answer begins
+    const streamedIdxRef = useRef(0);
+    const guardTimerRef = useRef<number | null>(null);
+    const guardArmedRef = useRef(false);
 
     const lastUserRef = useRef<string | null>(null);
     const controllerRef = useRef<AbortController | null>(null);
@@ -118,6 +136,16 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
             setStreamText('');
             setIsThinking(true);
 
+            // reset guard
+            rawRef.current = '';
+            answerStartedRef.current = false;
+            streamedIdxRef.current = 0;
+            guardArmedRef.current = false;
+            if (guardTimerRef.current) {
+                window.clearTimeout(guardTimerRef.current);
+                guardTimerRef.current = null;
+            }
+
             const controller = new AbortController();
             controllerRef.current = controller;
 
@@ -127,22 +155,61 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
                 { role: 'user', content: trimmed },
             ];
 
+            const guardMs = 1200;
+
             await streamChat({
                 messages: streamingMessages,
                 maxTokens: 1024,
-                onDelta: (chunk) => setStreamText((prev) => prev + chunk),
+                onDelta: (chunk) => {
+                    rawRef.current += chunk;
+                    const rawLower = rawRef.current.toLowerCase();
+
+                    // Arm guard after first token
+                    if (!guardArmedRef.current) {
+                        guardArmedRef.current = true;
+                        guardTimerRef.current = window.setTimeout(() => {
+                            if (!answerStartedRef.current) {
+                                answerStartedRef.current = true;
+                                const clean = stripReasoning(rawRef.current);
+                                if (clean) setStreamText(clean);
+                                streamedIdxRef.current = rawRef.current.length;
+                                setIsThinking(false);
+                            }
+                        }, guardMs) as unknown as number;
+                    }
+
+                    const closeTagIdx = rawLower.lastIndexOf('</think>');
+                    if (closeTagIdx !== -1 && !answerStartedRef.current) {
+                        answerStartedRef.current = true;
+                        const after = rawRef.current.slice(closeTagIdx + '</think>'.length);
+                        const cleanDelta = stripReasoning(after);
+                        if (cleanDelta) setStreamText((prev) => prev + cleanDelta);
+                        streamedIdxRef.current = rawRef.current.length;
+                        if (guardTimerRef.current) {
+                            window.clearTimeout(guardTimerRef.current);
+                            guardTimerRef.current = null;
+                        }
+                        setIsThinking(false);
+                        return;
+                    }
+
+                    if (answerStartedRef.current) {
+                        const newPortion = rawRef.current.slice(streamedIdxRef.current);
+                        const cleanDelta = stripReasoning(newPortion);
+                        if (cleanDelta) setStreamText((prev) => prev + cleanDelta);
+                        streamedIdxRef.current = rawRef.current.length;
+                    }
+                },
                 onDone: async (full) => {
                     setIsThinking(false);
-                    setStreamText('');
                     try {
-                        // Persist both turns; backend returns conversationId if a new one was created
-                        const res = await saveChat({ conversationId, message: trimmed, assistantText: full });
+                        const finalClean = stripReasoning(full);
+                        setStreamText(finalClean);
+                        const res = await saveChat({ conversationId, message: trimmed, assistantText: finalClean });
                         const newId: string | undefined = (res as any)?.conversationId || conversationId;
-
                         if (!conversationId && newId && opts.onNewConversation) {
                             opts.onNewConversation(newId);
                         }
-
                         await refresh(newId);
                     } catch (e) {
                         // eslint-disable-next-line no-console
@@ -178,5 +245,3 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
         onStop,
     };
 }
-
-export default useStreamedChat;

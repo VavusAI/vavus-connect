@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Plus, Pencil, ArrowDown, Lock } from 'lucide-react';
+import { Send, Plus, Pencil, ArrowDown, Lock, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -69,7 +69,6 @@ async function streamChat({
             buffer = parts.pop() || '';
 
             for (const part of parts) {
-                // Basic SSE: look for a data: line
                 const line = part.split('\n').find((l) => l.startsWith('data:'));
                 if (!line) continue;
                 const payload = line.slice(5).trim();
@@ -106,8 +105,8 @@ const AIChat: React.FC = () => {
 
     // Conversation + history
     const [activeId, setActiveId] = useState<string | undefined>(undefined);
-    const { items: convos, loading: convLoading, refresh: refreshConvos } = useConversations(); // loads list + realtime :contentReference[oaicite:5]{index=5}
-    const { items: msgs, loading: msgsLoading, refresh: refreshMsgs } = useMessages(activeId); // loads history + realtime per-conv :contentReference[oaicite:6]{index=6}
+    const { items: convos, loading: convLoading, refresh: refreshConvos } = useConversations();
+    const { items: msgs, loading: msgsLoading, refresh: refreshMsgs } = useMessages(activeId);
 
     // Composer + controls
     const [input, setInput] = useState('');
@@ -115,8 +114,9 @@ const AIChat: React.FC = () => {
     const [usePersona, setUsePersona] = useState(false);
     const [longMode, setLongMode] = useState(false);
 
-    // Streaming UI state (we only render final answer, not CoT)
+    // Streaming UI state
     const [isTyping, setIsTyping] = useState(false);
+    const [isThinking, setIsThinking] = useState(false);
     const [streamText, setStreamText] = useState('');
 
     // Internal guards to hide CoT until it ends
@@ -163,6 +163,7 @@ const AIChat: React.FC = () => {
         setInput('');
         setStreamText('');
         setIsTyping(false);
+        setIsThinking(false);
         rawRef.current = '';
         answerStartedRef.current = false;
         streamedIdxRef.current = 0;
@@ -197,6 +198,7 @@ const AIChat: React.FC = () => {
 
         setInput('');
         setIsTyping(true);
+        setIsThinking(true);
         setStreamText('');
         rawRef.current = '';
         answerStartedRef.current = false;
@@ -207,7 +209,7 @@ const AIChat: React.FC = () => {
             guardTimerRef.current = null;
         }
 
-        // Build base streaming context (last ~6 turns + system) — matches your prior approach. :contentReference[oaicite:7]{index=7}
+        // Build base streaming context (last ~6 turns + system)
         let streamingMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
             { role: 'system', content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
             ...(msgs as DbMessage[]).slice(-6).map((m) => ({ role: m.role, content: m.content })),
@@ -217,7 +219,7 @@ const AIChat: React.FC = () => {
         const mode: Mode = useInternet || usePersona ? 'thinking' : 'normal';
         let guardMs = 1200;
 
-        // Optional thinking prepass (non-persist) to enable persona/web server logic; nothing shown to user. :contentReference[oaicite:8]{index=8}
+        // Optional “thinking” prepass (not persisted) to prime the model
         if (mode === 'thinking') {
             try {
                 const res = await fetch('/api/ai', {
@@ -244,7 +246,7 @@ const AIChat: React.FC = () => {
                             `[Internal Reasoning]\n${reasoning}\n\nNow provide ONLY the final answer in plain language. Do not include <think> or analysis.`,
                     });
                 }
-                guardMs = 500; // shorter guard when we’ve primed the model
+                guardMs = 500; // shorter guard when primed
             } catch {
                 toast({
                     title: 'Thinking failed',
@@ -272,6 +274,7 @@ const AIChat: React.FC = () => {
                             const clean = stripReasoning(rawRef.current);
                             if (clean) setStreamText(clean);
                             streamedIdxRef.current = rawRef.current.length;
+                            setIsThinking(false); // first visible content shown
                             scrollToBottom();
                         }
                     }, guardMs) as unknown as number;
@@ -290,6 +293,7 @@ const AIChat: React.FC = () => {
                         window.clearTimeout(guardTimerRef.current);
                         guardTimerRef.current = null;
                     }
+                    setIsThinking(false); // answer starts now
                     scrollToBottom();
                     return;
                 }
@@ -305,6 +309,7 @@ const AIChat: React.FC = () => {
                 try {
                     const finalClean = stripReasoning(full);
                     setStreamText(finalClean);
+                    setIsThinking(false);
                     // Persist the user+assistant turn; API can create a new conversation if missing.
                     const r = await saveChat({
                         conversationId: activeId,
@@ -329,12 +334,12 @@ const AIChat: React.FC = () => {
                     });
                 } finally {
                     setIsTyping(false);
-                    // ensure we’re pinned to bottom at end
                     setTimeout(scrollToBottom, 50);
                 }
             },
             onError: (e) => {
                 setIsTyping(false);
+                setIsThinking(false);
                 toast({
                     title: 'Stream error',
                     description: e instanceof Error ? e.message : 'Something went wrong.',
@@ -432,15 +437,21 @@ const AIChat: React.FC = () => {
                                 <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                     <div
                                         className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-                                            m.role === 'user'
-                                                ? 'bg-primary text-primary-foreground'
-                                                : 'bg-muted text-foreground'
+                                            m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground'
                                         }`}
                                     >
                                         {m.content}
                                     </div>
                                 </div>
                             ))}
+                        </div>
+                    )}
+
+                    {/* Thinking spinner (only before first visible token) */}
+                    {isTyping && isThinking && (
+                        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>thinking…</span>
                         </div>
                     )}
 
