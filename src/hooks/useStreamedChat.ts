@@ -10,9 +10,13 @@ export type ChatMessage = {
 };
 
 type SendableMsg = { role: 'system' | 'user' | 'assistant'; content: string };
-type Opts = { onNewConversation?: (id: string) => void };
 
-// SSE helper
+type UseStreamedChatOpts = {
+    /** Called when a brand-new conversation gets created on first save */
+    onNewConversation?: (id: string) => void;
+};
+
+/** ---- SSE streaming helper that talks to /api/ai-stream ---- */
 async function streamChat({
                               messages,
                               maxTokens,
@@ -40,6 +44,7 @@ async function streamChat({
             }),
             signal,
         });
+
         if (!res.ok || !res.body) {
             onError(new Error(`HTTP ${res.status}`));
             return;
@@ -57,6 +62,7 @@ async function streamChat({
             buffer += decoder.decode(value, { stream: true });
             const parts = buffer.split('\n\n');
             buffer = parts.pop() || '';
+
             for (const part of parts) {
                 const line = part.split('\n').find((l) => l.startsWith('data:'));
                 if (!line) continue;
@@ -75,7 +81,9 @@ async function streamChat({
                         full += delta;
                         onDelta(delta);
                     }
-                } catch { /* keepalives */ }
+                } catch {
+                    // ignore malformed/keepalive frames
+                }
             }
         }
 
@@ -85,7 +93,13 @@ async function streamChat({
     }
 }
 
-export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
+/**
+ * Streaming hook that mirrors your current AIChat flow:
+ * - streams from /api/ai-stream
+ * - then saves via /api/ai (saveChat)
+ * - refreshes history and adopts returned conversationId if new
+ */
+export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOpts = {}) {
     const { items, refresh } = useMessages(conversationId);
     const messages = items as ChatMessage[];
 
@@ -95,7 +109,7 @@ export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
     const lastUserRef = useRef<string | null>(null);
     const controllerRef = useRef<AbortController | null>(null);
 
-    const send = useCallback(
+    const onSend = useCallback(
         async (text: string) => {
             const trimmed = text.trim();
             if (!trimmed) return;
@@ -121,14 +135,17 @@ export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
                     setIsThinking(false);
                     setStreamText('');
                     try {
+                        // Persist both turns; backend returns conversationId if a new one was created
                         const res = await saveChat({ conversationId, message: trimmed, assistantText: full });
                         const newId: string | undefined = (res as any)?.conversationId || conversationId;
 
                         if (!conversationId && newId && opts.onNewConversation) {
                             opts.onNewConversation(newId);
                         }
+
                         await refresh(newId);
                     } catch (e) {
+                        // eslint-disable-next-line no-console
                         console.error(e);
                     }
                 },
@@ -143,13 +160,11 @@ export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
         [messages, conversationId, refresh, opts]
     );
 
-    const regenerate = useCallback(() => {
-        if (lastUserRef.current) {
-            return send(lastUserRef.current);
-        }
-    }, [send]);
+    const onRegenerate = useCallback(() => {
+        if (lastUserRef.current) return onSend(lastUserRef.current);
+    }, [onSend]);
 
-    const stop = useCallback(() => {
+    const onStop = useCallback(() => {
         controllerRef.current?.abort();
         setIsThinking(false);
     }, []);
@@ -158,9 +173,9 @@ export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
         messages,
         streamText,
         isThinking,
-        onSend: send,
-        onRegenerate: regenerate,
-        onStop: stop,
+        onSend,
+        onRegenerate,
+        onStop,
     };
 }
 
