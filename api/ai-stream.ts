@@ -1,81 +1,103 @@
-/* eslint-disable import/no-unused-modules */
-// /api/ai-stream.ts (Vercel edge/node function)
+// api/ai-stream.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const GLOBAL_SYSTEM = 'You are VAVUS AI. Be concise, actionable, and accurate.';
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
-const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL!;
-const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN || '';
+export const config = {
+    runtime: 'nodejs20',
+};
 
-type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
+/** Minimal CORS helper so preflight (OPTIONS) doesn't return 405 */
+function setCORS(res: VercelResponse) {
+    res.setHeader('Access-Control-Allow-Origin', '*'); // same-origin? you can lock this down
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    if (req.method !== 'POST') {
-        res.status(405).json({ error: 'POST only' });
-        return;
-    }
-    if (!RUNPOD_CHAT_URL) {
-        res.status(500).json({ error: 'RUNPOD_CHAT_URL not set' });
+    setCORS(res);
+
+    if (req.method === 'OPTIONS') {
+        res.status(204).end();
         return;
     }
 
-    // Input from client
-    const body = (req.body || {}) as {
-        messages?: Msg[];
-        max_tokens?: number;
+    if (req.method !== 'POST') {
+        res.status(405).send('POST only');
+        return;
+    }
+
+    const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL;
+    const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN;
+    if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
+        res.status(500).send('Runpod not configured');
+        return;
+    }
+
+    const {
+        model = 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
+        temperature = 0.3,
+        max_tokens = 1024,
+        messages = [],
+    } = (req.body ?? {}) as {
+        model?: string;
         temperature?: number;
-        system?: string;
+        max_tokens?: number;
+        messages?: { role: 'system' | 'user' | 'assistant'; content: string }[];
     };
 
-    const msgs: Msg[] = [
-        { role: 'system', content: body.system || GLOBAL_SYSTEM },
-        ...(body.messages || []),
-    ];
-
-    // Open an SSE stream to client
+    // SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
 
-    // Call Runpod (OpenAI-compatible /v1/chat/completions)
+    // Call upstream (Runpod chat completions compatible with OpenAI stream format)
     const upstream = await fetch(RUNPOD_CHAT_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            ...(RUNPOD_CHAT_TOKEN ? { Authorization: `Bearer ${RUNPOD_CHAT_TOKEN}` } : {}),
+            Authorization: `Bearer ${RUNPOD_CHAT_TOKEN}`,
         },
         body: JSON.stringify({
-            model: DEFAULT_MODEL,
+            model,
             stream: true,
-            temperature: body.temperature ?? 0.3,
-            max_tokens: body.max_tokens ?? 1024,
-            messages: msgs,
+            temperature,
+            max_tokens,
+            messages,
         }),
     });
 
     if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '');
-        res.status(upstream.status).json({ error: text || 'Runpod upstream failed' });
+        res.status(upstream.status).end(text || 'Upstream failed');
         return;
     }
-
-    // Think stripping state
-    let inThink = false;
-    let carry = '';
-
-    const send = (chunk: string) => {
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
-    };
 
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder('utf-8');
 
+    // Optional: keepalive ping so proxies don’t close the pipe
+    const keepalive = setInterval(() => {
+        try {
+            res.write(': ping\n\n');
+        } catch {
+            clearInterval(keepalive);
+        }
+    }, 15000);
+
+    const forward = (chunk: string) => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
+    };
+
+    // Strip <think>…</think> on the fly so the UI never sees chain-of-thought
+    let inThink = false;
+
     try {
+        let carry = '';
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
-
             const text = decoder.decode(value, { stream: true });
+
+            // Upstream is already SSE. Split frames and relay.
             const frames = (carry + text).split('\n\n');
             carry = frames.pop() || '';
 
@@ -85,6 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 const payload = line.slice(5).trim();
                 if (payload === '[DONE]') {
                     res.write('data: [DONE]\n\n');
+                    clearInterval(keepalive);
                     res.end();
                     return;
                 }
@@ -93,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     const delta: string = json?.choices?.[0]?.delta?.content ?? '';
                     if (!delta) continue;
 
-                    // Strip <think>…</think> while streaming
+                    // filter reasoning
                     let out = '';
                     let i = 0;
                     while (i < delta.length) {
@@ -103,25 +126,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                             continue;
                         }
                         if (inThink) {
-                            const end = delta.slice(i).toLowerCase().indexOf('</think>');
-                            if (end === -1) { i = delta.length; continue; }
-                            i += end + 8;
+                            const closeIdx = delta.slice(i).toLowerCase().indexOf('</think>');
+                            if (closeIdx === -1) {
+                                i = delta.length; // swallow until we see </think>
+                                continue;
+                            }
+                            i += closeIdx + 8;
                             inThink = false;
                             continue;
                         }
                         out += delta[i];
                         i += 1;
                     }
-                    if (out) send(out);
+
+                    if (out) forward(out);
                 } catch {
-                    // ignore non-JSON keepalives
+                    // ignore malformed frames
                 }
             }
         }
-    } catch (e) {
-        // fall through
-    }
 
-    res.write('data: [DONE]\n\n');
-    res.end();
+        // graceful end
+        clearInterval(keepalive);
+        res.write('data: [DONE]\n\n');
+        res.end();
+    } catch (e: any) {
+        clearInterval(keepalive);
+        // If the client disconnects, write will throw; just end.
+        try {
+            res.write(`data: ${JSON.stringify({ error: e?.message || 'stream aborted' })}\n\n`);
+        } catch {}
+        res.end();
+    }
 }
