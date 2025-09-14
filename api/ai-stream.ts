@@ -32,8 +32,7 @@ export async function POST(req: Request) {
 
         if (!r.ok) {
             const text = await r.text().catch(() => '');
-            throw new Error(`Runpod ${r.status}: ${text}`);
-        }
+            throw new RunpodError({ status: r.status, body: text, url });        }
     } catch (err: any) {
         const headers = new Headers();
         headers.set('Content-Type', 'text/event-stream; charset=utf-8');
@@ -44,8 +43,10 @@ export async function POST(req: Request) {
         const encoder = new TextEncoder();
         const body = new ReadableStream({
             start(controller) {
-                const msg = JSON.stringify({ error: err?.message || 'fetch failed' });
-                controller.enqueue(encoder.encode(`event: error\ndata: ${msg}\n\n`));
+                const data = err instanceof RunpodError
+                    ? { status: err.status, body: err.body }
+                    : { error: err?.message || 'fetch failed' };
+                const msg = JSON.stringify(data);                controller.enqueue(encoder.encode(`event: error\ndata: ${msg}\n\n`));
                 controller.close();
             },
         });

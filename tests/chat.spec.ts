@@ -160,8 +160,7 @@ describe('chat pipeline', () => {
         const req: any = { method: 'POST', body: { message: 'hi', longMode: true } };
         const res = createRes();
         await handler(req, res);
-        const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-        expect(body.max_tokens).toBe(2048);
+        const body = JSON.parse(fetchMock.mock.calls[0][1].body).input;        expect(body.max_tokens).toBe(2048);
     });
 
     it('respects persona and workspace toggles', async () => {
@@ -170,8 +169,7 @@ describe('chat pipeline', () => {
         let req: any = { method: 'POST', body: { message: 'hi', usePersona: false, useWorkspace: false } };
         let res = createRes();
         await ctx.handler(req, res);
-        let msgs = JSON.parse(ctx.fetchMock.mock.calls[0][1].body).messages;
-        expect(msgs.some((m: any) => m.content.includes('User profile'))).toBe(false);
+        let msgs = JSON.parse(ctx.fetchMock.mock.calls[0][1].body).input.messages;        expect(msgs.some((m: any) => m.content.includes('User profile'))).toBe(false);
         expect(msgs.some((m: any) => m.content.includes('Workspace Memory'))).toBe(false);
 
         // toggles on
@@ -179,8 +177,7 @@ describe('chat pipeline', () => {
         req = { method: 'POST', body: { message: 'hi', usePersona: true, useWorkspace: true } };
         res = createRes();
         await ctx.handler(req, res);
-        msgs = JSON.parse(ctx.fetchMock.mock.calls[0][1].body).messages;
-        expect(msgs.some((m: any) => m.content.includes('User profile: Persona'))).toBe(true);
+        msgs = JSON.parse(ctx.fetchMock.mock.calls[0][1].body).input.messages;        expect(msgs.some((m: any) => m.content.includes('User profile: Persona'))).toBe(true);
         expect(msgs.some((m: any) => m.content.includes('Workspace Memory:\nWorkspace'))).toBe(true);
     });
 });

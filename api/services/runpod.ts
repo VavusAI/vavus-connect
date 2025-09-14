@@ -1,4 +1,5 @@
 import { Msg } from './prompt.js';
+import { callRunpod, RunpodError } from '../_runpod.js';
 
 export async function runpodChat({ model, messages, temperature, max_tokens }:{
     model: string;
@@ -15,25 +16,18 @@ export async function runpodChat({ model, messages, temperature, max_tokens }:{
         throw new Error(`Missing env: ${miss}`);
     }
 
-    const r = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ model, messages, temperature, max_tokens }),
-    });
-
-    if (!r.ok) {
-        const text = await r.text().catch(() => '');
-        throw new Error(`Runpod ${r.status}: ${text || 'no body'}`);
+    try {
+        const data = await callRunpod({ url, token, input: { model, messages, temperature, max_tokens } });
+        const assistantText =
+            data?.choices?.[0]?.message?.content ??
+            data?.output?.choices?.[0]?.message?.content ??
+            data?.output?.text ??
+            data?.text ?? '';
+        return { data, assistantText: String(assistantText ?? '') };
+    } catch (e: any) {
+        if (e instanceof RunpodError) {
+            throw new RunpodError({ status: e.status, body: e.body, url });
+        }
+        throw e;
     }
-
-    const data = await r.json();
-    const assistantText =
-        data?.choices?.[0]?.message?.content ??
-        data?.output?.choices?.[0]?.message?.content ??
-        data?.output?.text ??
-        data?.text ?? '';
-    return { data, assistantText: String(assistantText ?? '') };
 }
