@@ -75,6 +75,7 @@ function detectAnswerStart(bufferLower: string): number {
 async function streamChat({
                               messages,
                               maxTokens,
+                              web,
                               onDelta,
                               onDone,
                               onError,
@@ -82,6 +83,7 @@ async function streamChat({
                           }: {
     messages: SendableMsg[];
     maxTokens: number;
+    web?: boolean;
     onDelta: (chunk: string) => void;
     onDone: (full: string) => void;
     onError: (e: unknown) => void;
@@ -96,6 +98,7 @@ async function streamChat({
                 temperature: 0.3,
                 max_tokens: maxTokens,
                 messages,
+                web,
             }),
             signal,
         });
@@ -160,7 +163,7 @@ export function useStreamedChat(opts: UseStreamedChatOpts = {}) {
     const controllerRef = useRef<AbortController | null>(null);
 
     const onSend = useCallback(
-        async (text: string) => {
+        async (text: string, opts?: { web?: boolean }) => {
             const trimmed = text.trim();
             if (!trimmed) return;
 
@@ -202,6 +205,7 @@ export function useStreamedChat(opts: UseStreamedChatOpts = {}) {
             await streamChat({
                 messages: context,
                 maxTokens: 1024,
+                web: opts?.web,
                 signal: controller.signal,
                 onDelta: (chunk) => {
                     rawRef.current += chunk;

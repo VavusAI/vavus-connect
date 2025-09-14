@@ -32,12 +32,14 @@ function stripReasoning(s: string): string {
 async function streamChat({
                               messages,
                               maxTokens,
+                              web,
                               onDelta,
                               onDone,
                               onError,
                           }: {
     messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
     maxTokens: number;
+    web?: boolean;
     onDelta: (chunk: string) => void;
     onDone: (full: string) => void;
     onError: (e: unknown) => void;
@@ -51,6 +53,7 @@ async function streamChat({
                 temperature: 0.3,
                 max_tokens: maxTokens,
                 messages,
+                web,
             }),
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -260,6 +263,7 @@ const AIChat: React.FC = () => {
         await streamChat({
             messages: streamingMessages,
             maxTokens,
+            web: useInternet,
             onDelta: (chunk) => {
                 // Accumulate raw (may include CoT). Guard until </think> or timeout.
                 rawRef.current += chunk;
