@@ -9,6 +9,9 @@ export type ChatMessage = {
     created_at: string;
 };
 
+type SendableMsg = { role: 'system' | 'user' | 'assistant'; content: string };
+type Opts = { onNewConversation?: (id: string) => void };
+
 // basic SSE streaming helper
 async function streamChat({
                               messages,
@@ -18,7 +21,7 @@ async function streamChat({
                               onError,
                               signal,
                           }: {
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
+    messages: SendableMsg[];
     maxTokens: number;
     onDelta: (chunk: string) => void;
     onDone: (full: string) => void;
@@ -37,7 +40,11 @@ async function streamChat({
             }),
             signal,
         });
-        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+        if (!res.ok || !res.body) {
+            onError(new Error(`HTTP ${res.status}`));
+            return;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder('utf-8');
@@ -47,11 +54,13 @@ async function streamChat({
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
+
             buffer += decoder.decode(value, { stream: true });
             const parts = buffer.split('\n\n');
             buffer = parts.pop() || '';
+
             for (const part of parts) {
-                const line = part.split('\n').find(l => l.startsWith('data:'));
+                const line = part.split('\n').find((l) => l.startsWith('data:'));
                 if (!line) continue;
                 const payload = line.slice(5).trim();
                 if (payload === '[DONE]') {
@@ -62,27 +71,31 @@ async function streamChat({
                     const json = JSON.parse(payload);
                     const delta =
                         json?.choices?.[0]?.delta?.content ??
-                        json?.choices?.[0]?.message?.content ?? '';
+                        json?.choices?.[0]?.message?.content ??
+                        '';
                     if (delta) {
                         full += delta;
                         onDelta(delta);
                     }
                 } catch {
-                    // ignore malformed lines
+                    // ignore malformed/keepalive lines
                 }
             }
         }
+
         onDone(full);
     } catch (e) {
         onError(e);
     }
 }
 
-export function useStreamedChat(conversationId?: string) {
+export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
     const { items, refresh } = useMessages(conversationId);
     const messages = items as ChatMessage[];
+
     const [streamText, setStreamText] = useState('');
     const [isThinking, setIsThinking] = useState(false);
+
     const lastUserRef = useRef<string | null>(null);
     const controllerRef = useRef<AbortController | null>(null);
 
@@ -90,27 +103,41 @@ export function useStreamedChat(conversationId?: string) {
         async (text: string) => {
             const trimmed = text.trim();
             if (!trimmed) return;
+
             lastUserRef.current = trimmed;
             setStreamText('');
             setIsThinking(true);
+
             const controller = new AbortController();
             controllerRef.current = controller;
 
-            const streamingMessages = [
-                { role: 'system' as const, content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
-                ...messages.slice(-6).map(m => ({ role: m.role as const, content: m.content })),
-                { role: 'user' as const, content: trimmed },
+            const streamingMessages: SendableMsg[] = [
+                { role: 'system', content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
+                ...messages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+                { role: 'user', content: trimmed },
             ];
 
             await streamChat({
                 messages: streamingMessages,
                 maxTokens: 1024,
-                onDelta: (chunk) => setStreamText(prev => prev + chunk),
+                onDelta: (chunk) => setStreamText((prev) => prev + chunk),
                 onDone: async (full) => {
                     setIsThinking(false);
                     setStreamText('');
-                    await saveChat({ conversationId, message: trimmed, assistantText: full });
-                    await refresh(conversationId);
+                    try {
+                        const res = await saveChat({ conversationId, message: trimmed, assistantText: full });
+                        const newId: string | undefined = (res && (res as any).conversationId) || conversationId;
+
+                        // if this was a brand-new convo, surface it
+                        if (!conversationId && newId && opts.onNewConversation) {
+                            opts.onNewConversation(newId);
+                        }
+
+                        await refresh(newId);
+                    } catch (e) {
+                        // eslint-disable-next-line no-console
+                        console.error(e);
+                    }
                 },
                 onError: () => {
                     setIsThinking(false);
@@ -120,7 +147,7 @@ export function useStreamedChat(conversationId?: string) {
 
             controllerRef.current = null;
         },
-        [messages, conversationId, refresh]
+        [messages, conversationId, refresh, opts]
     );
 
     const regenerate = useCallback(() => {
