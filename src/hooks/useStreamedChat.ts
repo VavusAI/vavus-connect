@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback } from 'react';
-import { useMessages } from '@/hooks/useMessages';
 import { saveChat } from '@/lib/api';
 
 export type ChatMessage = {
@@ -12,21 +11,67 @@ export type ChatMessage = {
 type SendableMsg = { role: 'system' | 'user' | 'assistant'; content: string };
 
 type UseStreamedChatOpts = {
-    /** Called when a brand-new conversation gets created on first save */
+    conversationId?: string;
     onNewConversation?: (id: string) => void;
+    getRecentMessages?: () => ChatMessage[]; // provide last N messages for context
 };
 
-/** Strip chain-of-thought / reasoning markers */
-function stripReasoning(s: string): string {
+/* --- STRIPPING + GATING HELPERS --- */
+
+// Remove any chain-of-thought / analysis / fenced think blocks
+function stripReasoningAll(s: string): string {
     if (!s) return s;
-    let out = s;
-    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    out = out.replace(/```(?:thinking|reasoning)[\s\S]*?```/gi, '');
-    out = out.replace(/<\/?think>/gi, '');
-    return out.trim();
+
+    // Remove DeepSeek tags
+    s = s.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
+    // Remove "pipe" style
+    s = s.replace(/<\|think\|>[\s\S]*?(?=<\|assistant\|>)/gi, '');
+
+    // Remove fenced code blocks labeled think/reasoning/analysis
+    s = s.replace(/```(?:think|thinking|reasoning|analysis)[\s\S]*?```/gi, '');
+
+    // Remove obvious “analysis:” style prefixes up to the next blank line
+    s = s.replace(/^\s*(analysis|reasoning|thoughts?|scratch(?:pad)?):[\s\S]*?(?:\n\s*\n|$)/gim, '');
+
+    // If the model emits "Final answer:" keep only what follows it
+    const fa = s.match(/final answer\s*:\s*/i);
+    if (fa) {
+        const idx = (fa.index ?? -1) + fa[0].length;
+        if (idx > -1) s = s.slice(idx);
+    }
+
+    // Minor cleanups
+    s = s.replace(/^(assistant|answer)\s*:\s*/i, '');
+    return s.trim();
 }
 
-/** ---- SSE streaming helper that talks to /api/ai-stream ---- */
+// During streaming, don't render *anything* until we know the
+// "thinking" phase is over. These markers flip the gate:
+function detectAnswerStart(bufferLower: string): number {
+    // </think>
+    const t1 = bufferLower.lastIndexOf('</think>');
+    if (t1 !== -1) return t1 + '</think>'.length;
+
+    // <|assistant|>  (after <|think|>)
+    const t2 = bufferLower.lastIndexOf('<|assistant|>');
+    if (t2 !== -1) return t2 + '<|assistant|>'.length;
+
+    // ``` (closing a fenced think block)
+    // only consider if we've seen ```think earlier
+    const hasFenceStart = /```think|```thinking|```reasoning|```analysis/i.test(bufferLower);
+    const lastFenceClose = bufferLower.lastIndexOf('```');
+    if (hasFenceStart && lastFenceClose !== -1) return lastFenceClose + 3;
+
+    // "Final answer:" pattern
+    const fa = bufferLower.lastIndexOf('final answer:');
+    if (fa !== -1) return fa + 'final answer:'.length;
+
+    // Otherwise unknown yet
+    return -1;
+}
+
+/* --- STREAM FUNCTION (talks to /api/ai-stream) --- */
 async function streamChat({
                               messages,
                               maxTokens,
@@ -55,10 +100,7 @@ async function streamChat({
             signal,
         });
 
-        if (!res.ok || !res.body) {
-            onError(new Error(`HTTP ${res.status}`));
-            return;
-        }
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder('utf-8');
@@ -92,7 +134,7 @@ async function streamChat({
                         onDelta(delta);
                     }
                 } catch {
-                    // ignore malformed/keepalive frames
+                    // ignore keepalive/comments
                 }
             }
         }
@@ -103,28 +145,18 @@ async function streamChat({
     }
 }
 
-/**
- * Streaming hook:
- * - streams from /api/ai-stream
- * - saves via /api/ai (saveChat)
- * - refreshes history and adopts returned conversationId if new
- * - hides CoT until first visible token (or guard timeout)
- */
-export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOpts = {}) {
-    const { items, refresh } = useMessages(conversationId);
-    const messages = items as ChatMessage[];
+/* --- HOOK --- */
+export function useStreamedChat(opts: UseStreamedChatOpts = {}) {
+    const { conversationId, onNewConversation, getRecentMessages } = opts;
 
     const [streamText, setStreamText] = useState('');
     const [isThinking, setIsThinking] = useState(false);
 
-    // CoT guard state
-    const rawRef = useRef('');              // raw streamed text
-    const answerStartedRef = useRef(false); // flips when answer begins
-    const streamedIdxRef = useRef(0);
+    // Gate state
+    const rawRef = useRef('');              // entire raw stream so far
+    const shownUntilRef = useRef(0);        // end index of what was flushed to UI
+    const answerStartedRef = useRef(false); // flips once we detect answer
     const guardTimerRef = useRef<number | null>(null);
-    const guardArmedRef = useRef(false);
-
-    const lastUserRef = useRef<string | null>(null);
     const controllerRef = useRef<AbortController | null>(null);
 
     const onSend = useCallback(
@@ -132,15 +164,13 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
             const trimmed = text.trim();
             if (!trimmed) return;
 
-            lastUserRef.current = trimmed;
             setStreamText('');
             setIsThinking(true);
 
-            // reset guard
+            // reset gate
             rawRef.current = '';
+            shownUntilRef.current = 0;
             answerStartedRef.current = false;
-            streamedIdxRef.current = 0;
-            guardArmedRef.current = false;
             if (guardTimerRef.current) {
                 window.clearTimeout(guardTimerRef.current);
                 guardTimerRef.current = null;
@@ -149,87 +179,94 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
             const controller = new AbortController();
             controllerRef.current = controller;
 
-            const streamingMessages: SendableMsg[] = [
+            const recent = getRecentMessages?.() ?? [];
+            const context: SendableMsg[] = [
                 { role: 'system', content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
-                ...messages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+                ...recent.slice(-6).map((m) => ({ role: m.role, content: m.content })),
                 { role: 'user', content: trimmed },
             ];
 
-            const guardMs = 1200;
+            // If the model never marks end-of-think, show something after a short guard
+            const GUARD_MS = 1200;
+            guardTimerRef.current = window.setTimeout(() => {
+                if (!answerStartedRef.current && rawRef.current) {
+                    // fall back: strip everything we have and start showing it
+                    answerStartedRef.current = true;
+                    const cleaned = stripReasoningAll(rawRef.current);
+                    setStreamText(cleaned);
+                    shownUntilRef.current = rawRef.current.length;
+                    setIsThinking(false);
+                }
+            }, GUARD_MS) as unknown as number;
 
             await streamChat({
-                messages: streamingMessages,
+                messages: context,
                 maxTokens: 1024,
+                signal: controller.signal,
                 onDelta: (chunk) => {
                     rawRef.current += chunk;
-                    const rawLower = rawRef.current.toLowerCase();
 
-                    // Arm guard after first token
-                    if (!guardArmedRef.current) {
-                        guardArmedRef.current = true;
-                        guardTimerRef.current = window.setTimeout(() => {
-                            if (!answerStartedRef.current) {
-                                answerStartedRef.current = true;
-                                const clean = stripReasoning(rawRef.current);
-                                if (clean) setStreamText(clean);
-                                streamedIdxRef.current = rawRef.current.length;
-                                setIsThinking(false);
+                    if (!answerStartedRef.current) {
+                        const lower = rawRef.current.toLowerCase();
+                        const startAt = detectAnswerStart(lower);
+                        if (startAt !== -1) {
+                            answerStartedRef.current = true;
+                            const tail = rawRef.current.slice(startAt);
+                            const cleaned = stripReasoningAll(tail);
+                            if (cleaned) setStreamText((prev) => prev + cleaned);
+                            shownUntilRef.current = rawRef.current.length;
+                            if (guardTimerRef.current) {
+                                window.clearTimeout(guardTimerRef.current);
+                                guardTimerRef.current = null;
                             }
-                        }, guardMs) as unknown as number;
-                    }
-
-                    const closeTagIdx = rawLower.lastIndexOf('</think>');
-                    if (closeTagIdx !== -1 && !answerStartedRef.current) {
-                        answerStartedRef.current = true;
-                        const after = rawRef.current.slice(closeTagIdx + '</think>'.length);
-                        const cleanDelta = stripReasoning(after);
-                        if (cleanDelta) setStreamText((prev) => prev + cleanDelta);
-                        streamedIdxRef.current = rawRef.current.length;
-                        if (guardTimerRef.current) {
-                            window.clearTimeout(guardTimerRef.current);
-                            guardTimerRef.current = null;
+                            setIsThinking(false);
+                            return;
                         }
-                        setIsThinking(false);
+                        // still thinking → show nothing (spinner stays on)
                         return;
                     }
 
-                    if (answerStartedRef.current) {
-                        const newPortion = rawRef.current.slice(streamedIdxRef.current);
-                        const cleanDelta = stripReasoning(newPortion);
-                        if (cleanDelta) setStreamText((prev) => prev + cleanDelta);
-                        streamedIdxRef.current = rawRef.current.length;
-                    }
+                    // Once answer started, append only the newly arrived portion, cleaned
+                    const newPortion = rawRef.current.slice(shownUntilRef.current);
+                    const cleaned = stripReasoningAll(newPortion);
+                    if (cleaned) setStreamText((prev) => prev + cleaned);
+                    shownUntilRef.current = rawRef.current.length;
                 },
                 onDone: async (full) => {
+                    if (guardTimerRef.current) {
+                        window.clearTimeout(guardTimerRef.current);
+                        guardTimerRef.current = null;
+                    }
                     setIsThinking(false);
+                    const finalClean = stripReasoningAll(full);
+                    setStreamText(finalClean);
+
+                    // persist
                     try {
-                        const finalClean = stripReasoning(full);
-                        setStreamText(finalClean);
-                        const res = await saveChat({ conversationId, message: trimmed, assistantText: finalClean });
+                        const res = await saveChat({
+                            conversationId,
+                            message: trimmed,
+                            assistantText: finalClean,
+                        });
                         const newId: string | undefined = (res as any)?.conversationId || conversationId;
-                        if (!conversationId && newId && opts.onNewConversation) {
-                            opts.onNewConversation(newId);
-                        }
-                        await refresh(newId);
-                    } catch (e) {
-                        // eslint-disable-next-line no-console
-                        console.error(e);
+                        onNewConversation?.(newId as string);
+                    } catch {
+                        // ignore save errors here (UI stays responsive)
                     }
                 },
                 onError: () => {
+                    if (guardTimerRef.current) {
+                        window.clearTimeout(guardTimerRef.current);
+                        guardTimerRef.current = null;
+                    }
                     setIsThinking(false);
                 },
-                signal: controller.signal,
             });
 
             controllerRef.current = null;
         },
-        [messages, conversationId, refresh, opts]
+        [conversationId, onNewConversation, getRecentMessages]
     );
-
-    const onRegenerate = useCallback(() => {
-        if (lastUserRef.current) return onSend(lastUserRef.current);
-    }, [onSend]);
 
     const onStop = useCallback(() => {
         controllerRef.current?.abort();
@@ -237,11 +274,9 @@ export function useStreamedChat(conversationId?: string, opts: UseStreamedChatOp
     }, []);
 
     return {
-        messages,
-        streamText,
         isThinking,
+        streamText,
         onSend,
-        onRegenerate,
         onStop,
     };
 }
