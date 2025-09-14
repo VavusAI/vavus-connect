@@ -12,7 +12,7 @@ export type ChatMessage = {
 type SendableMsg = { role: 'system' | 'user' | 'assistant'; content: string };
 type Opts = { onNewConversation?: (id: string) => void };
 
-// basic SSE streaming helper
+// SSE helper
 async function streamChat({
                               messages,
                               maxTokens,
@@ -40,7 +40,6 @@ async function streamChat({
             }),
             signal,
         });
-
         if (!res.ok || !res.body) {
             onError(new Error(`HTTP ${res.status}`));
             return;
@@ -58,7 +57,6 @@ async function streamChat({
             buffer += decoder.decode(value, { stream: true });
             const parts = buffer.split('\n\n');
             buffer = parts.pop() || '';
-
             for (const part of parts) {
                 const line = part.split('\n').find((l) => l.startsWith('data:'));
                 if (!line) continue;
@@ -77,9 +75,7 @@ async function streamChat({
                         full += delta;
                         onDelta(delta);
                     }
-                } catch {
-                    // ignore malformed/keepalive lines
-                }
+                } catch { /* keepalives */ }
             }
         }
 
@@ -126,16 +122,13 @@ export function useStreamedChat(conversationId?: string, opts: Opts = {}) {
                     setStreamText('');
                     try {
                         const res = await saveChat({ conversationId, message: trimmed, assistantText: full });
-                        const newId: string | undefined = (res && (res as any).conversationId) || conversationId;
+                        const newId: string | undefined = (res as any)?.conversationId || conversationId;
 
-                        // if this was a brand-new convo, surface it
                         if (!conversationId && newId && opts.onNewConversation) {
                             opts.onNewConversation(newId);
                         }
-
                         await refresh(newId);
                     } catch (e) {
-                        // eslint-disable-next-line no-console
                         console.error(e);
                     }
                 },
