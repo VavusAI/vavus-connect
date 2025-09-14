@@ -1,199 +1,109 @@
 // api/ai-stream.ts
+/* eslint-disable import/no-unused-modules */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { allowCORS, logRunpod } from './_runpod.js';
+import { runpodChat } from './services/runpod.js'; // uses RUNPOD_CHAT_URL + RUNPOD_CHAT_TOKEN
+
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
 
 export const config = {
-    runtime: 'nodejs', // ← 'nodejs20' is invalid on Vercel; use 'nodejs' or remove this
+    runtime: 'nodejs', // Node 20 on Vercel
 };
 
-function setCORS(res: VercelResponse) {
-    // Tighten this to your origin if you don't need wildcard
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+function openSSE(res: VercelResponse) {
+    // CORS is set by allowCORS; these are SSE specifics:
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+}
+
+function sendDelta(res: VercelResponse, chunk: string) {
+    const frame = {
+        id: `chatcmpl_${Date.now()}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: DEFAULT_MODEL,
+        choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+    };
+    res.write(`data: ${JSON.stringify(frame)}\n\n`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    setCORS(res);
-
-    if (req.method === 'OPTIONS') {
-        res.status(204).end();
-        return;
-    }
-
-    if (!['GET', 'POST'].includes(req.method ?? '')) {
-        res.status(405).send('GET or POST only');
-        return;
-    }
-
-    const RUNPOD_CHAT_URL = process.env.RUNPOD_CHAT_URL;
-    const RUNPOD_CHAT_TOKEN = process.env.RUNPOD_CHAT_TOKEN;
-    if (!RUNPOD_CHAT_URL || !RUNPOD_CHAT_TOKEN) {
-        res.status(500).send('Runpod not configured');
-        return;
-    }
-
-    type Incoming = {
-        model?: string;
-        temperature?: number | string;
-        max_tokens?: number | string;
-        messages?: { role: 'system' | 'user' | 'assistant'; content: string }[] | string;
-    };
-
-    let params: Incoming = req.body ?? {};
-    if (req.method === 'GET') {
-        const query =
-            Object.keys(req.query ?? {}).length > 0
-                ? (req.query as Record<string, string>)
-                : Object.fromEntries(
-                    new URL(req.url ?? '', 'http://localhost').searchParams
-                );
-        params = query as Incoming;
-    }
-
-    const {
-        model = 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
-        temperature = 0.3,
-        max_tokens = 1024,
-        messages = [],
-    } = params;
-
-    const temperatureNum =
-        typeof temperature === 'string' ? parseFloat(temperature) : temperature;
-    const maxTokensNum =
-        typeof max_tokens === 'string' ? parseInt(max_tokens, 10) : max_tokens;
-    const messagesArr =
-        typeof messages === 'string'
-            ? (() => {
-                try {
-                    return JSON.parse(messages);
-                } catch {
-                    return [];
-                }
-            })()
-            : messages;
-
-    // SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-
-    // Keepalive comments so proxies don’t terminate the stream
-    const keepalive = setInterval(() => {
-        try {
-            res.write(': ping\n\n');
-        } catch {
-            clearInterval(keepalive);
-        }
-    }, 15000);
-
-    // Abort if client disconnects
-    res.on('close', () => {
-        try {
-            clearInterval(keepalive);
-        } catch {
-            /* ignore */
-        }
-    });
-
-    // Call upstream (OpenAI-compatible chat completions)
-    const upstream = await fetch(RUNPOD_CHAT_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${RUNPOD_CHAT_TOKEN}`,
-        },
-        body: JSON.stringify({
-            model,
-            stream: true,
-            temperature: temperatureNum,
-            max_tokens: maxTokensNum,
-            messages: messagesArr,
-        }),
-    });
-
-    if (!upstream.ok || !upstream.body) {
-        const text = await upstream.text().catch(() => '');
-        clearInterval(keepalive);
-        res.status(upstream.status).end(text || 'Upstream failed');
-        return;
-    }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-
-    // Inline chain-of-thought filter
-    let inThink = false;
-    let carry = '';
-
-    const forward = (chunk: string) => {
-        res.write(
-            `data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`
-        );
-    };
+    allowCORS(res);
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
     try {
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
+        const { messages, model, temperature, max_tokens } = (req.body || {}) as {
+            messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+            model?: string;
+            temperature?: number;
+            max_tokens?: number;
+        };
 
-            const text = decoder.decode(value, { stream: true });
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return res.status(400).json({ error: 'messages[] is required' });
+        }
 
-            // Upstream already uses SSE; split frames and forward
-            const frames = (carry + text).split('\n\n');
-            carry = frames.pop() || '';
+        // Start SSE right away so the connection stays alive while Runpod works.
+        openSSE(res);
+        res.write(':ok\n\n'); // initial comment frame
+        const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
+        req.on('close', () => clearInterval(keepalive));
 
-            for (const f of frames) {
-                const line = f.split('\n').find((l) => l.startsWith('data:'));
-                if (!line) continue;
-                const payload = line.slice(5).trim();
+        // Call your Runpod worker (runsync). This returns the full text.
+        const { assistantText } = await runpodChat({
+            model: model || DEFAULT_MODEL,
+            messages,
+            temperature,
+            max_tokens,
+            logger: logRunpod,
+        });
 
-                if (payload === '[DONE]') {
-                    clearInterval(keepalive);
-                    res.write('data: [DONE]\n\n');
-                    res.end();
-                    return;
+        // Stream the answer as OpenAI-style delta chunks.
+        const text = String(assistantText || '');
+        if (text.length === 0) {
+            // still send a minimal frame so the client completes cleanly
+            sendDelta(res, '');
+        } else {
+            // chunk by ~80–160 chars, respecting word boundaries
+            const target = Math.max(80, Math.min(160, Math.floor(text.length / 40) || 120));
+            let i = 0;
+            while (i < text.length) {
+                const nextCut = Math.min(i + target, text.length);
+                let j = nextCut;
+                if (j < text.length) {
+                    const space = text.lastIndexOf(' ', nextCut);
+                    if (space > i + 20) j = space;
                 }
-
-                try {
-                    const json = JSON.parse(payload);
-                    const delta: string = json?.choices?.[0]?.delta?.content ?? '';
-                    if (!delta) continue;
-
-                    // strip <think>…</think>
-                    let out = '';
-                    let i = 0;
-                    while (i < delta.length) {
-                        if (!inThink && delta.slice(i).toLowerCase().startsWith('<think>')) {
-                            inThink = true;
-                            i += 7;
-                            continue;
-                        }
-                        if (inThink) {
-                            const closeIdx = delta.slice(i).toLowerCase().indexOf('</think>');
-                            if (closeIdx === -1) {
-                                i = delta.length; // swallow until we see </think>
-                                continue;
-                            }
-                            i += closeIdx + 8;
-                            inThink = false;
-                            continue;
-                        }
-                        out += delta[i];
-                        i += 1;
-                    }
-
-                    if (out) forward(out);
-                } catch {
-                    // ignore malformed frames
-                }
+                const chunk = text.slice(i, j);
+                sendDelta(res, chunk);
+                i = j;
+                // tiny delay improves UX and prevents buffer coalescing
+                await new Promise(r => setTimeout(r, 10));
             }
         }
+
+        // Send final assistant message wrapper (compat) and close.
+        res.write(
+            `data: ${JSON.stringify({
+                id: `chatcmpl_${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: model || DEFAULT_MODEL,
+                choices: [{ index: 0, message: { role: 'assistant', content: '' }, finish_reason: 'stop' }],
+            })}\n\n`
+        );
 
         clearInterval(keepalive);
         res.write('data: [DONE]\n\n');
         res.end();
-    } catch {
-        clearInterval(keepalive);
-        res.end();
+    } catch (err: any) {
+        try {
+            res.write(`data: ${JSON.stringify({ error: String(err?.message || err) })}\n\n`);
+            res.write('data: [DONE]\n\n');
+        } finally {
+            res.end();
+        }
     }
 }
