@@ -2,12 +2,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 export const config = {
-    runtime: 'nodejs20',
+    runtime: 'nodejs', // ← 'nodejs20' is invalid on Vercel; use 'nodejs' or remove this
 };
 
-/** Minimal CORS helper so preflight (OPTIONS) doesn't return 405 */
 function setCORS(res: VercelResponse) {
-    res.setHeader('Access-Control-Allow-Origin', '*'); // same-origin? you can lock this down
+    // Tighten this to your origin if you don't need wildcard
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
@@ -49,7 +49,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
 
-    // Call upstream (Runpod chat completions compatible with OpenAI stream format)
+    // Keepalive comments so proxies don’t terminate the stream
+    const keepalive = setInterval(() => {
+        try {
+            res.write(': ping\n\n');
+        } catch {
+            clearInterval(keepalive);
+        }
+    }, 15000);
+
+    // Abort if client disconnects
+    res.on('close', () => {
+        try { clearInterval(keepalive); } catch {}
+    });
+
+    // Call upstream (OpenAI-compatible chat completions)
     const upstream = await fetch(RUNPOD_CHAT_URL, {
         method: 'POST',
         headers: {
@@ -67,6 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '');
+        clearInterval(keepalive);
         res.status(upstream.status).end(text || 'Upstream failed');
         return;
     }
@@ -74,30 +89,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder('utf-8');
 
-    // Optional: keepalive ping so proxies don’t close the pipe
-    const keepalive = setInterval(() => {
-        try {
-            res.write(': ping\n\n');
-        } catch {
-            clearInterval(keepalive);
-        }
-    }, 15000);
+    // Inline chain-of-thought filter
+    let inThink = false;
+    let carry = '';
 
     const forward = (chunk: string) => {
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
+        res.write(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`
+        );
     };
 
-    // Strip <think>…</think> on the fly so the UI never sees chain-of-thought
-    let inThink = false;
-
     try {
-        let carry = '';
         while (true) {
             const { value, done } = await reader.read();
             if (done) break;
+
             const text = decoder.decode(value, { stream: true });
 
-            // Upstream is already SSE. Split frames and relay.
+            // Upstream already uses SSE; split frames and forward
             const frames = (carry + text).split('\n\n');
             carry = frames.pop() || '';
 
@@ -105,18 +114,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 const line = f.split('\n').find((l) => l.startsWith('data:'));
                 if (!line) continue;
                 const payload = line.slice(5).trim();
+
                 if (payload === '[DONE]') {
-                    res.write('data: [DONE]\n\n');
                     clearInterval(keepalive);
+                    res.write('data: [DONE]\n\n');
                     res.end();
                     return;
                 }
+
                 try {
                     const json = JSON.parse(payload);
                     const delta: string = json?.choices?.[0]?.delta?.content ?? '';
                     if (!delta) continue;
 
-                    // filter reasoning
+                    // strip <think>…</think>
                     let out = '';
                     let i = 0;
                     while (i < delta.length) {
@@ -146,16 +157,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
         }
 
-        // graceful end
         clearInterval(keepalive);
         res.write('data: [DONE]\n\n');
         res.end();
-    } catch (e: any) {
+    } catch {
         clearInterval(keepalive);
-        // If the client disconnects, write will throw; just end.
-        try {
-            res.write(`data: ${JSON.stringify({ error: e?.message || 'stream aborted' })}\n\n`);
-        } catch {}
         res.end();
     }
 }
