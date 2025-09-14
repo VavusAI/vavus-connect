@@ -8,7 +8,7 @@ export const config = {
 function setCORS(res: VercelResponse) {
     // Tighten this to your origin if you don't need wildcard
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
@@ -20,8 +20,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
     }
 
-    if (req.method !== 'POST') {
-        res.status(405).send('POST only');
+    if (!['GET', 'POST'].includes(req.method ?? '')) {
+        res.status(405).send('GET or POST only');
         return;
     }
 
@@ -32,17 +32,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
     }
 
+    type Incoming = {
+        model?: string;
+        temperature?: number | string;
+        max_tokens?: number | string;
+        messages?: { role: 'system' | 'user' | 'assistant'; content: string }[] | string;
+    };
+
+    let params: Incoming = req.body ?? {};
+    if (req.method === 'GET') {
+        const query =
+            Object.keys(req.query ?? {}).length > 0
+                ? (req.query as Record<string, string>)
+                : Object.fromEntries(
+                    new URL(req.url ?? '', 'http://localhost').searchParams
+                );
+        params = query as Incoming;
+    }
+
     const {
         model = 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
         temperature = 0.3,
         max_tokens = 1024,
         messages = [],
-    } = (req.body ?? {}) as {
-        model?: string;
-        temperature?: number;
-        max_tokens?: number;
-        messages?: { role: 'system' | 'user' | 'assistant'; content: string }[];
-    };
+    } = params;
+
+    const temperatureNum =
+        typeof temperature === 'string' ? parseFloat(temperature) : temperature;
+    const maxTokensNum =
+        typeof max_tokens === 'string' ? parseInt(max_tokens, 10) : max_tokens;
+    const messagesArr =
+        typeof messages === 'string'
+            ? (() => {
+                try {
+                    return JSON.parse(messages);
+                } catch {
+                    return [];
+                }
+            })()
+            : messages;
 
     // SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -60,7 +88,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Abort if client disconnects
     res.on('close', () => {
-        try { clearInterval(keepalive); } catch {}
+        try {
+            clearInterval(keepalive);
+        } catch {
+            /* ignore */
+        }
     });
 
     // Call upstream (OpenAI-compatible chat completions)
@@ -73,9 +105,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         body: JSON.stringify({
             model,
             stream: true,
-            temperature,
-            max_tokens,
-            messages,
+            temperature: temperatureNum,
+            max_tokens: maxTokensNum,
+            messages: messagesArr,
         }),
     });
 

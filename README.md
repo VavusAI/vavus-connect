@@ -1,17 +1,3 @@
-# Vavus Connect
-
-A chat interface powered by VAVUS AI with streaming and non‑streaming endpoints.
-
-## Prerequisites
-
-Set the following environment variables before starting the app:
-
-- `RUNPOD_CHAT_URL` – Runpod endpoint for chat completion requests
-- `RUNPOD_CHAT_TOKEN` – Bearer token for the Runpod endpoint
-- `SEARXNG_URL` – Optional: SearxNG instance for web search results
-- `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` – Client‑side Supabase credentials
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_JWT_SECRET` – Server‑side Supabase credentials
-
 ## Development
 
 ```bash
@@ -36,9 +22,10 @@ A GIF preview is also available:
 
 - **CORS errors** – Ensure your deployment domain is allowed by the Runpod endpoint and Supabase project.
 - **Missing environment variables** – Check that all variables listed in the prerequisites are defined in your deployment environment. Missing values will result in runtime 500 errors.
-- ## Streaming API
 
-The `/api/ai-stream` endpoint returns a Server-Sent Events (SSE) stream.
+## Streaming API
+
+The `/api/ai-stream` endpoint returns a Server-Sent Events (SSE) stream and accepts both `GET` and `POST` requests. Send prompt data in the request body for `POST`, or as URL query parameters for `GET` (for example, `/api/ai-stream?model=...&messages=[...]`).
 Clients should register handlers for the following events:
 
 - `onmessage` receives incremental data frames from the model.
