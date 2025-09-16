@@ -21,6 +21,7 @@ import VavusApps from "./pages/VavusApps";
 import AuthPage from "./pages/AuthPage";
 import AccountPage from "./pages/AccountPage";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import Kickstarter from "./pages/Kickstarter";
 
 
 
@@ -47,6 +48,7 @@ const App = () => (
                 <Route path="/join" element={<Join />} />
                 <Route path="/contact" element={<Contact />} />
                 <Route path="/privacy" element={<Privacy />} />
+                <Route path="/kickstarter" element={<Kickstarter />} />
 
                 {/* Auth pages */}
                 <Route path="/auth" element={<AuthPage />} />
