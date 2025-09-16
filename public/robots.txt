@@ -12,3 +12,7 @@ Allow: /
 
 User-agent: *
 Allow: /
+
+User-agent: *
+Allow: /
+Sitemap: https://www.vavusai.com/sitemap.xml

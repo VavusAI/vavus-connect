@@ -4,6 +4,7 @@ import { Menu, X, Zap, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSession } from "@/hooks/useSession";
 import { supabase } from "@/lib/supabase";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 
 const AI_ITEMS = [
   { name: 'Vavus AI', href: '/vavus-ai' },
@@ -23,6 +24,7 @@ export const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
   const { session } = useSession();
+  const isAdmin = useIsAdmin();
 
   const isActivePath = (path: string) => {
     if (path === '/' && location.pathname === '/') return true;
@@ -64,7 +66,7 @@ export const Navbar = () => {
                     AI <ChevronDown className="h-4 w-4 opacity-70 transition group-hover:rotate-180" />
                   </button>
 
-                  {/* Hover-safe dropdown (padding creates the gap inside the container) */}
+                  {/* Hover-safe dropdown */}
                   <div
                       className="
                     absolute left-0 top-full pt-3
@@ -120,6 +122,24 @@ export const Navbar = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Blog */}
+                <Link
+                    to="/blog"
+                    className={`nav-link whitespace-nowrap ${isActivePath('/blog') ? 'active' : ''}`}
+                >
+                  Blog
+                </Link>
+
+                {/* Admin-only: New Post */}
+                {isAdmin ? (
+                    <Link
+                        to="/blog/new"
+                        className={`nav-link whitespace-nowrap ${isActivePath('/blog/new') ? 'active' : ''}`}
+                    >
+                      New Post
+                    </Link>
+                ) : null}
 
                 {/* For Businesses */}
                 <Link
@@ -218,6 +238,34 @@ export const Navbar = () => {
                     ))}
                   </div>
                 </details>
+
+                {/* Blog */}
+                <Link
+                    to="/blog"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`block px-3 py-2 text-base font-medium rounded-lg transition-colors ${
+                        isActivePath('/blog')
+                            ? 'text-primary bg-primary-light'
+                            : 'text-muted-foreground hover:text-foreground hover:bg-surface'
+                    }`}
+                >
+                  Blog
+                </Link>
+
+                {/* Admin-only: New Post */}
+                {isAdmin ? (
+                    <Link
+                        to="/blog/new"
+                        onClick={() => setMobileMenuOpen(false)}
+                        className={`block px-3 py-2 text-base font-medium rounded-lg transition-colors ${
+                            isActivePath('/blog/new')
+                                ? 'text-primary bg-primary-light'
+                                : 'text-muted-foreground hover:text-foreground hover:bg-surface'
+                        }`}
+                    >
+                      New Post
+                    </Link>
+                ) : null}
 
                 {/* For Businesses */}
                 <Link

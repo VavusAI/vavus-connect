@@ -22,6 +22,9 @@ import AuthPage from "./pages/AuthPage";
 import AccountPage from "./pages/AccountPage";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Kickstarter from "./pages/Kickstarter";
+import BlogList from '@/pages/BlogList';
+import BlogView from '@/pages/BlogView';
+import BlogNew from '@/pages/BlogNew';
 
 
 
@@ -49,6 +52,9 @@ const App = () => (
                 <Route path="/contact" element={<Contact />} />
                 <Route path="/privacy" element={<Privacy />} />
                 <Route path="/kickstarter" element={<Kickstarter />} />
+                <Route path="/blog" element={<BlogList />} />
+                <Route path="/blog/new" element={<BlogNew />} />
+                <Route path="/blog/:slug" element={<BlogView />} />
 
                 {/* Auth pages */}
                 <Route path="/auth" element={<AuthPage />} />
