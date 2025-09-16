@@ -22,13 +22,13 @@ const DeviceShowcase: React.FC = () => {
   ];
 
   return (
-      <section className="py-12 px-4 sm:px-6 lg:px-8 bg-gray-50">
+      <section className="pt-0 pb-12 px-4 sm:px-6 lg:px-8 bg-gray-50">
         <div className="max-w-7xl mx-auto">
           <Card className="overflow-hidden">
             <CardHeader className="text-center">
               <div className="mb-2">
                 <Badge variant="secondary" className="rounded-full px-3 py-1 text-xs">
-                  VAVUS DEVICE
+                  VAVUS AI
                 </Badge>
               </div>
               <CardTitle className="text-3xl font-bold">

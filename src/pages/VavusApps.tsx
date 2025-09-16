@@ -149,11 +149,9 @@ const VavusApps = () => {
                 "Photo/OCR translate (coming soon)",
                 "Multi-headphone support on devices",
             ],
-            comingSoon: false,
-            action: {
-                label: "Open",
-                onClick: () => navigate("/AIChat"),
-            },
+            comingSoon: true,
+            action: { label: "Preview soon", disabled: true },
+
         },
         {
             id: "group-chat",

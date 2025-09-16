@@ -19,7 +19,8 @@ const Timeline = () => {
       items: [
         'Neural machine translation model',
         'Context-aware processing',
-        'Initial language support (10 languages)'
+        'Developed and tested Vavus AI and Vavus AI Pro',
+        'Initial language support (21 languages)'
       ]
     },
     {
@@ -31,14 +32,15 @@ const Timeline = () => {
       items: [
         'E2E encryption protocol',
         'Zero-knowledge architecture',
-        'Security audit completed'
+        'Security audit completed',
+        'OS, Apps and Server security developed and tested'
       ]
     },
     {
       quarter: 'Q4 2025',
       status: 'in-progress',
       category: 'Apps',
-      title: 'Beta Applications',
+      title: 'Beta Test Applications',
       description: 'Launched web and mobile beta applications for early testing.',
       items: [
         'Web application beta',
@@ -48,7 +50,7 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q3 2024',
+      quarter: 'Q4 2025',
       status: 'in-progress',
       category: 'Devices',
       title: 'Hardware Development',
@@ -67,14 +69,14 @@ const Timeline = () => {
       title: 'Kickstarter campaign',
       description: 'Launch Vavus AI device on kickstarter.',
       items: [
-        'Additional language models',
-        'Regional dialect support',
-        'Cultural context enhancement',
+        'Pre-Campaign',
+        'Videos with the apps and features',
+        'Setup of Donations',
         'Performance optimization'
       ]
     },
     {
-      quarter: 'Q1 2025',
+      quarter: 'Q4 2025',
       status: 'planned',
       category: 'Devices',
       title: 'Device Launch',
@@ -87,8 +89,8 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q2 2025',
-      status: 'planned',
+      quarter: 'Q4 2025',
+      status: 'completed',
       category: 'Security',
       title: 'Enterprise Features',
       description: 'Launch enterprise-grade features for business customers.',
@@ -100,7 +102,7 @@ const Timeline = () => {
       ]
     },
     {
-      quarter: 'Q3 2025',
+      quarter: 'Q1 2026',
       status: 'planned',
       category: 'Product',
       title: 'AI Enhancement',

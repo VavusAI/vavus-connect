@@ -23,11 +23,10 @@ const Join = () => {
       title: 'Engineering',
       description: 'Build the future of AI-powered communication',
       roles: [
-        'Senior Full-Stack Engineer',
+        'Chief Technology Officer',
         'AI/ML Engineer', 
         'DevOps Engineer',
-        'Mobile Developer (iOS/Android)',
-        'Backend Systems Engineer'
+        'Mobile Developer React Native - (iOS/Android/Web)',
       ],
       skills: ['React/TypeScript', 'Python/PyTorch', 'Kubernetes', 'Swift/Kotlin', 'Go/Rust']
     },
@@ -48,10 +47,8 @@ const Join = () => {
       title: 'Partnerships',
       description: 'Build strategic relationships and expand our reach',
       roles: [
-        'VP of Partnerships',
-        'Business Development Manager',
-        'Channel Sales Manager',
-        'Strategic Accounts Executive'
+        'Medical Sales Rep',
+        'Influencers',
       ],
       skills: ['Relationship Building', 'Negotiation', 'Strategic Planning', 'Enterprise Sales']
     },
@@ -62,7 +59,7 @@ const Join = () => {
       roles: [
         'Growth Marketing Manager',
         'Content Marketing Lead',
-        'Developer Relations',
+        'Social Media Marketer',
         'Community Manager'
       ],
       skills: ['Growth Hacking', 'Content Strategy', 'Developer Community', 'Analytics']
