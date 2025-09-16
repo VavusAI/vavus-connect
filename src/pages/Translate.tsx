@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, Copy, History, Globe, Lock } from 'lucide-react';
+import { ArrowRight, Copy, History, Globe, Lock, ArrowLeftRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { translateText } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
+import { MADLAD_LANGUAGES, AUTO_CODE, labelFor } from '@/lib/languages/madlad';
 
 type TranslationRow = {
   id: string;
@@ -20,24 +21,19 @@ type TranslationRow = {
 const Translate = () => {
   const [sourceText, setSourceText] = useState('');
   const [targetText, setTargetText] = useState('');
-  const [targetLanguage, setTargetLanguage] = useState('spanish');
+
+  // User-selectable source language (default: auto-detect)
+  const [sourceLanguage, setSourceLanguage] = useState<string>(AUTO_CODE);
+  // Target language by BCP-47 (default: Spanish)
+  const [targetLanguage, setTargetLanguage] = useState<string>('es');
+
   const [isTranslating, setIsTranslating] = useState(false);
   const [history, setHistory] = useState<TranslationRow[]>([]);
   const { toast } = useToast();
 
-  // Same UI labels; you can swap to ISO codes later
-  const languages = [
-    { value: 'spanish', label: 'Spanish (Español)' },
-    { value: 'french', label: 'French (Français)' },
-    { value: 'german', label: 'German (Deutsch)' },
-    { value: 'italian', label: 'Italian (Italiano)' },
-    { value: 'portuguese', label: 'Portuguese (Português)' },
-    { value: 'japanese', label: 'Japanese (日本語)' },
-    { value: 'korean', label: 'Korean (한국어)' },
-    { value: 'chinese', label: 'Chinese (中文)' },
-    { value: 'arabic', label: 'Arabic (العربية)' },
-    { value: 'russian', label: 'Russian (Русский)' }
-  ];
+  // Lists: source shows ALL (incl. auto), target hides auto
+  const sourceLanguages = MADLAD_LANGUAGES;
+  const targetLanguages = MADLAD_LANGUAGES.filter(l => l.code !== AUTO_CODE);
 
   async function fetchHistory() {
     const { data, error } = await supabase
@@ -58,11 +54,10 @@ const Translate = () => {
 
     try {
       setIsTranslating(true);
-      // Call your protected endpoint → saves row in Supabase
       const { output } = await translateText({
         text: sourceText,
-        sourceLang: 'auto',
-        targetLang: targetLanguage
+        sourceLang: sourceLanguage, // pass selected source
+        targetLang: targetLanguage,
       });
       setTargetText(output || '');
       await fetchHistory();
@@ -70,7 +65,7 @@ const Translate = () => {
       toast({
         title: 'Could not translate',
         description: typeof e?.message === 'string' ? e.message : 'Please try again.',
-        variant: 'destructive'
+        variant: 'destructive',
       });
     } finally {
       setIsTranslating(false);
@@ -81,6 +76,16 @@ const Translate = () => {
     if (!targetText) return;
     navigator.clipboard.writeText(targetText);
     toast({ title: 'Copied to clipboard', description: 'Translation copied successfully' });
+  };
+
+  // Quick swap (disabled if source is auto)
+  const handleSwap = () => {
+    if (sourceLanguage === AUTO_CODE) return;
+    const prevSource = sourceLanguage;
+    setSourceLanguage(targetLanguage);
+    setTargetLanguage(prevSource);
+    setSourceText(targetText);
+    setTargetText(sourceText);
   };
 
   return (
@@ -109,9 +114,22 @@ const Translate = () => {
             <Card className="p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-semibold text-foreground">Source Text</h3>
-                <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-                  <Globe className="h-4 w-4" />
-                  <span>Auto-detect</span>
+
+                {/* Source language selector (includes Auto-detect) */}
+                <div className="flex items-center gap-2">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  <Select value={sourceLanguage} onValueChange={setSourceLanguage}>
+                    <SelectTrigger className="w-56">
+                      <SelectValue placeholder="Select source language" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sourceLanguages.map((lang) => (
+                          <SelectItem key={lang.code} value={lang.code}>
+                            {labelFor(lang.code)}
+                          </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
@@ -124,9 +142,24 @@ const Translate = () => {
 
               <div className="flex justify-between items-center mt-4">
                 <span className="text-sm text-muted-foreground">{sourceText.length} characters</span>
-                <Button onClick={handleTranslate} disabled={!sourceText.trim() || isTranslating} className="btn-hero">
-                  {isTranslating ? 'Translating…' : (<><span>Translate</span><ArrowRight className="ml-2 h-4 w-4" /></>)}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                      variant="outline"
+                      onClick={handleSwap}
+                      disabled={sourceLanguage === AUTO_CODE}
+                      title={sourceLanguage === AUTO_CODE ? 'Swap disabled when source is Auto' : 'Swap languages'}
+                  >
+                    <ArrowLeftRight className="h-4 w-4" />
+                  </Button>
+                  <Button onClick={handleTranslate} disabled={!sourceText.trim() || isTranslating} className="btn-hero">
+                    {isTranslating ? 'Translating…' : (
+                        <>
+                          <span>Translate</span>
+                          <ArrowRight className="ml-2 h-4 w-4" />
+                        </>
+                    )}
+                  </Button>
+                </div>
               </div>
             </Card>
 
@@ -134,14 +167,16 @@ const Translate = () => {
             <Card className="p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-semibold text-foreground">Translation</h3>
+
+                {/* Target language selector (no Auto) */}
                 <Select value={targetLanguage} onValueChange={setTargetLanguage}>
-                  <SelectTrigger className="w-48">
-                    <SelectValue />
+                  <SelectTrigger className="w-56">
+                    <SelectValue placeholder="Choose target language" />
                   </SelectTrigger>
                   <SelectContent>
-                    {languages.map((lang) => (
-                        <SelectItem key={lang.value} value={lang.value}>
-                          {lang.label}
+                    {targetLanguages.map((lang) => (
+                        <SelectItem key={lang.code} value={lang.code}>
+                          {labelFor(lang.code)}
                         </SelectItem>
                     ))}
                   </SelectContent>
@@ -182,7 +217,8 @@ const Translate = () => {
                       <Card key={row.id} className="p-4 hover:bg-surface transition">
                         <div className="text-xs text-muted-foreground mb-1">
                           {new Date(row.created_at).toLocaleString()}
-                          {row.target_lang ? ` • ${row.target_lang}` : ''}
+                          {row.source_lang ? ` • ${labelFor(row.source_lang)} → ` : ' • '}
+                          {row.target_lang ? `${labelFor(row.target_lang)}` : ''}
                         </div>
                         <div className="text-sm font-medium mb-2 line-clamp-2">{row.input_text}</div>
                         <div className="text-sm text-muted-foreground line-clamp-2">{row.output_text}</div>
@@ -193,6 +229,8 @@ const Translate = () => {
                               onClick={() => {
                                 setSourceText(row.input_text);
                                 setTargetText(row.output_text || '');
+                                if (row.source_lang) setSourceLanguage(row.source_lang);
+                                if (row.target_lang) setTargetLanguage(row.target_lang);
                               }}
                           >
                             Load

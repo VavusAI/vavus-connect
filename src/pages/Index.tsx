@@ -6,7 +6,7 @@ import {
   MessageSquare,
   Smartphone,
   Lock,
-  Cloud,
+  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -51,30 +51,31 @@ const Index: React.FC = () => {
     };
   }, [hasSubscribed, session]);
 
+  // === Edgy Kickstarter copy ===
   const features = [
     {
       icon: Globe,
-      title: 'Universal Translation',
+      title: '419 languages. No borders.',
       description:
-          'Translate between 400+ languages with AI-powered accuracy and context awareness.',
+          'Real‑time speech ↔ text with clean AI notes. Built for messy rooms and bad mics.',
     },
     {
-      icon: Smartphone,
-      title: 'Device Integration',
+      icon: MessageSquare,
+      title: 'Vavus AI — Top 3 overall.',
       description:
-          'Seamless sync across all your devices with our dedicated hardware ecosystem.',
+          'Hosted on our servers for speed and reliability. Tap specialist agents: Legal, Medical, Tutor, Professor.',
     },
     {
       icon: Lock,
-      title: 'Privacy First',
+      title: 'Zero‑Telemetry Privacy.',
       description:
-          'End-to-end encryption ensures your conversations and data remain completely private.',
+          'We don’t collect content or usage. End‑to‑end encrypted chats between devices. Your keys, your call.',
     },
     {
-      icon: Cloud,
-      title: 'Offline Capable',
+      icon: Smartphone,
+      title: 'Vavus OS — No trackers.',
       description:
-          'Core features work offline, syncing automatically when connected.',
+          'No social feeds. No Google tracking. FIPS‑only crypto across OS and apps.',
     },
   ];
 
@@ -121,7 +122,7 @@ const Index: React.FC = () => {
       setShowSubscribeModal(false);
 
       setSubStatus('ok');
-      setSubMsg('You’re in! We’ll keep you posted.');
+      setSubMsg("You’re in. We’ll ping you before we go live.");
       setEmail('');
     } catch (err) {
       setSubStatus('error');
@@ -143,20 +144,19 @@ const Index: React.FC = () => {
           <div className="relative mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
             <div className="text-center">
               <h1 className="mb-8 animate-fade-in">
-                <span className="gradient-text">VAVUS AI</span>
+                <span className="gradient-text">Meet the first HIPAA‑grade AI Device.</span>
                 <br />
-                Translation & AI for everyone
+                Zero telemetry. FIPS‑only. Vavus AI (Top 3 overall).
               </h1>
 
               <p className="mx-auto mb-12 max-w-2xl text-xl text-muted-foreground animate-slide-up">
-                Experience the future of communication with secure, private AI-powered
-                translation and conversation tools designed for global connectivity.
+                Translation, transcription, and specialist agents—without the tracking. Device‑to‑device chats stay sealed. We can’t see your messages—or your metadata.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 justify-center items-center animate-slide-up">
-                <Link to="/translate">
+                <Link to="/kickstarter">
                   <Button className="btn-hero group">
-                    Translate now
+                    Back on Kickstarter
                     <ArrowRight className="ml-2 h-5 w-5 group-hover:translate-x-1 transition-transform" />
                   </Button>
                 </Link>
@@ -173,10 +173,30 @@ const Index: React.FC = () => {
               <div className="mt-8 p-4 bg-accent-brand-light border border-accent-brand/20 rounded-lg max-w-lg mx-auto">
                 <p className="text-sm text-accent-brand font-medium">
                   <Smartphone className="inline h-4 w-4 mr-1" />
-                  Accounts will require device after launch.
+                  Accounts will require a Vavus Device after launch. Kickstarter backers ship first.
                 </p>
               </div>
             </div>
+          </div>
+        </section>
+
+        {/* Meet the Device */}
+        <section className="py-20 bg-white border-t">
+          <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+            <div className="mb-8 text-center">
+              <h2 className="mb-3">Meet the Device</h2>
+              <p className="text-lg text-muted-foreground">HIPAA‑grade AI. Access without surveillance.</p>
+            </div>
+            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>419‑language translation</strong> in real time.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Live transcription & AI notes</strong> for meetings and calls.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Vavus AI — Top 3 overall</strong>, hosted on our servers for speed and reliability.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Specialist agents</strong>: Legal, Medical, Tutor, Professor.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Zero telemetry & end‑to‑end encrypted chats</strong> between devices.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Vavus OS — no social media, no Google tracking</strong>; <strong>FIPS‑only encryption</strong> across OS & apps.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>HIPAA Mode (optional)</strong>: on‑device audit; encrypted uploads under your keys; <strong>BAA available</strong>.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>No‑Guardrails Research Mode</strong>: open topic for lawful research (no step‑by‑step harm).</span></li>
+            </ul>
           </div>
         </section>
 
@@ -184,9 +204,9 @@ const Index: React.FC = () => {
         <section className="py-24 bg-white">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-16">
-              <h2 className="mb-4">Powerful Features</h2>
+              <h2 className="mb-4">What the Device Gets You</h2>
               <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-                Built for the modern world with enterprise-grade security and consumer-friendly design.
+                Speed, privacy, and specialist intelligence—without the surveillance.
               </p>
             </div>
 
@@ -214,12 +234,15 @@ const Index: React.FC = () => {
         <section className="py-16 bg-surface">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="text-center">
-              <p className="text-muted-foreground mb-8">Trusted by leading organizations</p>
-              <div className="flex flex-wrap justify-center items-center gap-8">
-                {socialProofLogos.map((logo) => (
-                    <div key={logo} className="text-2xl font-bold text-muted-foreground/60">
-                      {logo}
-                    </div>
+              <p className="text-muted-foreground mb-6">Trust, not tracking</p>
+              <div className="flex flex-wrap justify-center items-center gap-3">
+                {['FIPS‑Only Encryption', 'Zero Telemetry', 'End‑to‑End Encrypted Chats', 'HIPAA Mode (Optional)', 'BAA Available'].map((badge) => (
+                    <span
+                        key={badge}
+                        className="rounded-full border border-muted px-3 py-1 text-sm text-muted-foreground/90 bg-white"
+                    >
+                  {badge}
+                </span>
                 ))}
               </div>
             </div>
@@ -230,9 +253,9 @@ const Index: React.FC = () => {
         <section className="py-24 bg-white">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="bg-gradient-hero rounded-xl p-8 md:p-12 text-center text-white">
-              <h2 className="mb-4 text-white">Stay in the Loop</h2>
+              <h2 className="mb-4 text-white">Get in early</h2>
               <p className="mb-8 text-lg opacity-90 max-w-2xl mx-auto">
-                Get early access, product updates, and launch notifications delivered to your inbox.
+                Early‑bird pricing, limited units, and launch updates.
               </p>
 
               <form
@@ -241,7 +264,7 @@ const Index: React.FC = () => {
               >
                 <Input
                     type="email"
-                    placeholder="Enter your email"
+                    placeholder="your@work.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="bg-white/20 border-white/30 text-white placeholder:text-white/70 focus:border-white"
@@ -253,7 +276,7 @@ const Index: React.FC = () => {
                     className="bg-white text-primary hover:bg-white/90 font-semibold px-8"
                     disabled={subStatus === 'loading'}
                 >
-                  {subStatus === 'loading' ? 'Subscribing…' : 'Subscribe'}
+                  {subStatus === 'loading' ? 'Subscribing…' : 'Get Early Access'}
                 </Button>
               </form>
 
