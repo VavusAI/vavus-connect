@@ -4,7 +4,7 @@ import { callRunpod, bad, allowCORS, logRunpod } from './_runpod.js';
 import { supabaseAdmin } from './_utils/supabaseAdmin.js';
 import { requireUser } from './_utils/auth.js';
 
-export const config = { runtime: 'nodejs' as const };
+export const config = { runtime: 'nodejs' };
 
 const UI_TO_ISO: Record<string, string> = {
     spanish: 'es',
