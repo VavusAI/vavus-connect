@@ -16,8 +16,8 @@ export default function SubscribeForm({ className = "" }: { className?: string }
 
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault();
-        const value = email.trim();
 
+        const value = email.trim().toLowerCase();
         if (!isEmail(value)) {
             setStatus("error");
             setMessage("Please enter a valid email.");
@@ -27,31 +27,39 @@ export default function SubscribeForm({ className = "" }: { className?: string }
         setStatus("loading");
         setMessage("");
 
-        const page = window.location.pathname;
-        const utm = window.location.search.slice(1); // raw query string
+        // Be resilient if this ever renders on the server
+        const hasWindow = typeof window !== "undefined";
+        const page = hasWindow ? window.location.pathname : "/kickstarter";
+        const utm = hasWindow ? (window.location.search.slice(1) || null) : null;
 
-        // upsert avoids duplicate errors thanks to UNIQUE index (lower(email))
-        const { error } = await supabase
-            .from("subscriptions")
-            .upsert(
-                {
-                    email: value.toLowerCase(),
-                    user_id: session?.user?.id ?? null,
-                    page,
-                    utm
-                },
-                { onConflict: "email" }
-            );
+        try {
+            // Use plain INSERT; treat duplicate as success
+            const { error } = await supabase
+                .from("subscriptions")
+                .insert([{ email: value, user_id: session?.user?.id ?? null, page, utm }]);
 
-        if (error) {
+            if (error) {
+                // Duplicate email → success UX
+                if (error.code === "23505" || /duplicate key|unique/i.test(error.message)) {
+                    setStatus("ok");
+                    setMessage("You’re in! We’ll keep you posted.");
+                    setEmail("");
+                    return;
+                }
+                console.error("[SubscribeForm] Supabase insert error:", error);
+                setStatus("error");
+                setMessage(error.message || "Something went wrong. Please try again.");
+                return;
+            }
+
+            setStatus("ok");
+            setMessage("You’re in! We’ll keep you posted.");
+            setEmail("");
+        } catch (err: any) {
+            console.error("[SubscribeForm] Unexpected error:", err);
             setStatus("error");
-            setMessage("Something went wrong. Please try again.");
-            return;
+            setMessage(err?.message || "Something went wrong. Please try again.");
         }
-
-        setStatus("ok");
-        setMessage("You’re in! We’ll keep you posted.");
-        setEmail("");
     }
 
     return (
@@ -69,11 +77,7 @@ export default function SubscribeForm({ className = "" }: { className?: string }
             </Button>
 
             {message && (
-                <p
-                    className={`text-sm mt-2 ${
-                        status === "error" ? "text-red-600" : "text-green-600"
-                    }`}
-                >
+                <p className={`text-sm mt-2 ${status === "error" ? "text-red-600" : "text-green-600"}`}>
                     {message}
                 </p>
             )}
