@@ -1,86 +1,141 @@
-import { useState } from "react";
-import { supabase } from "@/lib/supabase";
-import { useSession } from "@/hooks/useSession";
+import React, { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabase";
 
 function isEmail(v: string) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
-export default function SubscribeForm({ className = "" }: { className?: string }) {
-    const { session } = useSession();
+type Props = { className?: string; page?: string };
+
+export default function SubscribeForm({ className = "", page }: Props) {
     const [email, setEmail] = useState("");
-    const [status, setStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
-    const [message, setMessage] = useState<string>("");
+    const [status, setStatus] = useState<"idle"|"loading"|"ok"|"error">("idle");
+    const [msg, setMsg] = useState("");
 
     async function onSubmit(e: React.FormEvent) {
         e.preventDefault();
+        const clean = email.trim().toLowerCase();
 
-        const value = email.trim().toLowerCase();
-        if (!isEmail(value)) {
+        if (!isEmail(clean)) {
             setStatus("error");
-            setMessage("Please enter a valid email.");
+            setMsg("Please enter a valid email.");
             return;
         }
 
         setStatus("loading");
-        setMessage("");
+        setMsg("");
 
-        // Be resilient if this ever renders on the server
-        const hasWindow = typeof window !== "undefined";
-        const page = hasWindow ? window.location.pathname : "/kickstarter";
-        const utm = hasWindow ? (window.location.search.slice(1) || null) : null;
+        // context capture (works client and won’t crash on SSR)
+        const hasWin = typeof window !== "undefined";
+        const pagePath = page ?? (hasWin ? window.location.pathname : "/kickstarter");
+        const utm = hasWin ? (window.location.search.slice(1) || null) : null;
 
         try {
-            // Use plain INSERT; treat duplicate as success
+            // Try to get user id (ok if unauthenticated)
+            let user_id: string | null = null;
+            try {
+                const { data } = await supabase.auth.getUser();
+                user_id = data?.user?.id ?? null;
+            } catch { /* ignore */ }
+
+            // === A) Primary path: supabase-js insert ===
             const { error } = await supabase
                 .from("subscriptions")
-                .insert([{ email: value, user_id: session?.user?.id ?? null, page, utm }]);
+                .insert([{ email: clean, user_id, page: pagePath, utm }]);
 
             if (error) {
-                // Duplicate email → success UX
+                // Duplicate -> treat as success
                 if (error.code === "23505" || /duplicate key|unique/i.test(error.message)) {
-                    setStatus("ok");
-                    setMessage("You’re in! We’ll keep you posted.");
-                    setEmail("");
-                    return;
+                    setStatus("ok"); setMsg("You’re in! 🎉"); setEmail(""); return;
                 }
-                console.error("[SubscribeForm] Supabase insert error:", error);
+
+                // If supabase-js is misconfigured, fall back to raw REST to diagnose
+                const fallback = await tryRestInsert(clean, user_id, pagePath, utm);
+                if (fallback.ok) {
+                    setStatus("ok"); setMsg("You’re in! 🎉 (via REST)"); setEmail(""); return;
+                }
+
+                console.error("[SubscribeForm] Supabase error:", error, "REST fallback:", fallback);
                 setStatus("error");
-                setMessage(error.message || "Something went wrong. Please try again.");
+                setMsg(fallback.message || error.message || "Something went wrong. Please try again.");
                 return;
             }
 
             setStatus("ok");
-            setMessage("You’re in! We’ll keep you posted.");
+            setMsg("You’re in! 🎉");
             setEmail("");
         } catch (err: any) {
-            console.error("[SubscribeForm] Unexpected error:", err);
+            // Network/config errors surface here
+            console.error("[SubscribeForm] Unexpected:", err);
             setStatus("error");
-            setMessage(err?.message || "Something went wrong. Please try again.");
+            setMsg(err?.message || "Network error. Check Supabase URL/key.");
         }
     }
 
     return (
-        <form onSubmit={onSubmit} className={`flex gap-2 ${className}`}>
+        <form onSubmit={onSubmit} className={`flex gap-3 ${className}`}>
             <Input
                 type="email"
-                placeholder="Enter your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="md:w-96"
                 disabled={status === "loading"}
                 required
             />
-            <Button type="submit" className="btn-hero" disabled={status === "loading"}>
-                {status === "loading" ? "Subscribing..." : "Subscribe"}
+            <Button type="submit" disabled={status === "loading"}>
+                {status === "loading" ? "Subscribing…" : "Subscribe"}
             </Button>
-
-            {message && (
-                <p className={`text-sm mt-2 ${status === "error" ? "text-red-600" : "text-green-600"}`}>
-                    {message}
-                </p>
+            {msg && (
+                <span className={`text-sm self-center ${status === "error" ? "text-red-600" : "text-green-600"}`}>
+          {msg}
+        </span>
             )}
         </form>
     );
+}
+
+/**
+ * Fallback: direct REST call to isolate client config issues.
+ * If this works, your DB/policies are fine and the issue is supabase-js/env.
+ */
+async function tryRestInsert(
+    email: string,
+    user_id: string | null,
+    page: string | null,
+    utm: string | null
+): Promise<{ ok: boolean; message?: string }> {
+    try {
+        // These must be defined at build time in Vercel
+        const url = (import.meta as any)?.env?.VITE_SUPABASE_URL as string | undefined;
+        const anon = (import.meta as any)?.env?.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+        if (!url || !anon) {
+            return { ok: false, message: "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY." };
+        }
+
+        const res = await fetch(`${url}/rest/v1/subscriptions`, {
+            method: "POST",
+            headers: {
+                "apikey": anon,
+                "Authorization": `Bearer ${anon}`,
+                "Content-Type": "application/json",
+                "Prefer": "return=representation"
+            },
+            body: JSON.stringify([{ email, user_id, page, utm }])
+        });
+
+        if (res.ok) return { ok: true };
+
+        const text = await res.text();
+        // 409 duplicate -> success UX
+        if (res.status === 409 || /duplicate key|unique/i.test(text)) {
+            return { ok: true };
+        }
+        return { ok: false, message: `REST ${res.status}: ${text}` };
+    } catch (e: any) {
+        return { ok: false, message: e?.message || "REST network error" };
+    }
 }
