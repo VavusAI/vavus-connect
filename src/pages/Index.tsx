@@ -57,7 +57,7 @@ const Index: React.FC = () => {
       icon: Globe,
       title: '419 languages. No borders.',
       description:
-          'Real‑time speech ↔ text with clean AI notes. Built for messy rooms and bad mics.',
+          'Real-time speech ↔ text with clean AI notes. Built for messy rooms and bad mics.',
     },
     {
       icon: MessageSquare,
@@ -67,15 +67,15 @@ const Index: React.FC = () => {
     },
     {
       icon: Lock,
-      title: 'Zero‑Telemetry Privacy.',
+      title: 'Zero-Telemetry Privacy.',
       description:
-          'We don’t collect content or usage. End‑to‑end encrypted chats between devices. Your keys, your call.',
+          'We don’t collect content or usage. End-to-end encrypted chats between devices. Your keys, your call.',
     },
     {
       icon: Smartphone,
       title: 'Vavus OS — No trackers.',
       description:
-          'No social feeds. No Google tracking. FIPS‑only crypto across OS and apps.',
+          'No social feeds. No Google tracking. FIPS-only crypto across OS and apps.',
     },
   ];
 
@@ -102,19 +102,18 @@ const Index: React.FC = () => {
       const page = window.location.pathname;
       const utm = window.location.search.slice(1);
 
+      // ⬇️ Plain INSERT; duplicate emails are treated as success
       const { error } = await supabase
           .from('subscriptions')
-          .upsert(
-              {
-                email: value,
-                user_id: session?.user?.id ?? null,
-                page,
-                utm,
-              },
-              { onConflict: 'email' }
-          );
+          .insert([{ email: value, user_id: session?.user?.id ?? null, page, utm }]);
 
-      if (error) throw error;
+      if (error) {
+        if (error.code === '23505' || /duplicate key|unique/i.test(error.message)) {
+          // treat duplicate as success
+        } else {
+          throw error;
+        }
+      }
 
       // Mark as subscribed on this browser, hide popup
       localStorage.setItem('vavus_subscribed', '1');
@@ -124,11 +123,11 @@ const Index: React.FC = () => {
       setSubStatus('ok');
       setSubMsg("You’re in. We’ll ping you before we go live.");
       setEmail('');
-    } catch (err) {
+    } catch (err: any) {
+      console.error('[Index] Subscribe error:', err);
       setSubStatus('error');
-      setSubMsg('Something went wrong. Please try again.');
+      setSubMsg(err?.message || 'Something went wrong. Please try again.');
     } finally {
-      // fade the message out after a moment (optional)
       setTimeout(() => setSubStatus('idle'), 4000);
     }
   }
@@ -144,13 +143,13 @@ const Index: React.FC = () => {
           <div className="relative mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
             <div className="text-center">
               <h1 className="mb-8 animate-fade-in">
-                <span className="gradient-text">Meet the first HIPAA‑grade AI Device.</span>
+                <span className="gradient-text">Meet the first HIPAA-grade AI Device.</span>
                 <br />
-                Zero telemetry. FIPS‑only. Vavus AI (Top 3 overall).
+                Zero telemetry. FIPS-only. Vavus AI (Top 3 overall).
               </h1>
 
               <p className="mx-auto mb-12 max-w-2xl text-xl text-muted-foreground animate-slide-up">
-                Translation, transcription, and specialist agents—without the tracking. Device‑to‑device chats stay sealed. We can’t see your messages—or your metadata.
+                Translation, transcription, and specialist agents—without the tracking. Device-to-device chats stay sealed. We can’t see your messages—or your metadata.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 justify-center items-center animate-slide-up">
@@ -185,17 +184,17 @@ const Index: React.FC = () => {
           <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
             <div className="mb-8 text-center">
               <h2 className="mb-3">Meet the Device</h2>
-              <p className="text-lg text-muted-foreground">HIPAA‑grade AI. Access without surveillance.</p>
+              <p className="text-lg text-muted-foreground">HIPAA-grade AI. Access without surveillance.</p>
             </div>
             <ul className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>419‑language translation</strong> in real time.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>419-language translation</strong> in real time.</span></li>
               <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Live transcription & AI notes</strong> for meetings and calls.</span></li>
               <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Vavus AI — Top 3 overall</strong>, hosted on our servers for speed and reliability.</span></li>
               <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Specialist agents</strong>: Legal, Medical, Tutor, Professor.</span></li>
-              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Zero telemetry & end‑to‑end encrypted chats</strong> between devices.</span></li>
-              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Vavus OS — no social media, no Google tracking</strong>; <strong>FIPS‑only encryption</strong> across OS & apps.</span></li>
-              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>HIPAA Mode (optional)</strong>: on‑device audit; encrypted uploads under your keys; <strong>BAA available</strong>.</span></li>
-              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>No‑Guardrails Research Mode</strong>: open topic for lawful research (no step‑by‑step harm).</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Zero telemetry & end-to-end encrypted chats</strong> between devices.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>Vavus OS — no social media, no Google tracking</strong>; <strong>FIPS-only encryption</strong> across OS & apps.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>HIPAA Mode (optional)</strong>: on-device audit; encrypted uploads under your keys; <strong>BAA available</strong>.</span></li>
+              <li className="flex items-start gap-3"><Check className="h-5 w-5 mt-1" /><span><strong>No-Guardrails Research Mode</strong>: open topic for lawful research (no step-by-step harm).</span></li>
             </ul>
           </div>
         </section>
@@ -236,7 +235,7 @@ const Index: React.FC = () => {
             <div className="text-center">
               <p className="text-muted-foreground mb-6">Trust, not tracking</p>
               <div className="flex flex-wrap justify-center items-center gap-3">
-                {['FIPS‑Only Encryption', 'Zero Telemetry', 'End‑to‑End Encrypted Chats', 'HIPAA Mode (Optional)', 'BAA Available'].map((badge) => (
+                {['FIPS-Only Encryption', 'Zero Telemetry', 'End-to-End Encrypted Chats', 'HIPAA Mode (Optional)', 'BAA Available'].map((badge) => (
                     <span
                         key={badge}
                         className="rounded-full border border-muted px-3 py-1 text-sm text-muted-foreground/90 bg-white"
@@ -255,7 +254,7 @@ const Index: React.FC = () => {
             <div className="bg-gradient-hero rounded-xl p-8 md:p-12 text-center text-white">
               <h2 className="mb-4 text-white">Get in early</h2>
               <p className="mb-8 text-lg opacity-90 max-w-2xl mx-auto">
-                Early‑bird pricing, limited units, and launch updates.
+                Early-bird pricing, limited units, and launch updates.
               </p>
 
               <form
@@ -267,7 +266,7 @@ const Index: React.FC = () => {
                     placeholder="your@work.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="bg-white/20 border-white/30 text-white placeholder:text-white/70 focus:border-white"
+                    className="bg-white/20 border-white/30 text white placeholder:text-white/70 focus:border-white"
                     disabled={subStatus === 'loading'}
                     required
                 />

@@ -51,19 +51,18 @@ export const SubscribeModal: React.FC<SubscribeModalProps> = ({
             const page = window.location.pathname;
             const utm = window.location.search.slice(1); // raw query string
 
+            // ⬇️ Plain INSERT; duplicates treated as success
             const { error } = await supabase
                 .from('subscriptions')
-                .upsert(
-                    {
-                        email: value,
-                        user_id: session?.user?.id ?? null,
-                        page,
-                        utm,
-                    },
-                    { onConflict: 'email' }
-                );
+                .insert([{ email: value, user_id: session?.user?.id ?? null, page, utm }]);
 
-            if (error) throw error;
+            if (error) {
+                if (error.code === '23505' || /duplicate key|unique/i.test(error.message)) {
+                    // treat duplicate as success
+                } else {
+                    throw error;
+                }
+            }
 
             // Mark this browser as subscribed and notify parent
             localStorage.setItem('vavus_subscribed', '1');
@@ -78,8 +77,9 @@ export const SubscribeModal: React.FC<SubscribeModalProps> = ({
                 setEmail('');
                 setConsent(false);
             }, 2000);
-        } catch (err) {
-            setError('Something went wrong. Please try again.');
+        } catch (err: any) {
+            console.error('[SubscribeModal] Subscribe error:', err);
+            setError(err?.message || 'Something went wrong. Please try again.');
         } finally {
             setIsSubmitting(false);
         }
