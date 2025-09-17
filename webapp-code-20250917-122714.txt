@@ -1,0 +1,183 @@
+===== PROJECT TREE (max depth 4) =====
+.
+├── all_vavus_code.txt
+├── all_vavus_structure_and_code.txt
+├── api
+│   ├── ai-stream.ts
+│   ├── ai.ts
+│   ├── rss.xml.ts
+│   ├── _runpod.ts
+│   ├── services
+│   │   ├── conversation.ts
+│   │   ├── prompt.ts
+│   │   ├── runpod.ts
+│   │   ├── __tests__
+│   │   │   ├── conversation.test.ts
+│   │   │   ├── prompt.test.ts
+│   │   │   └── runpod.test.ts
+│   │   └── web.ts
+│   ├── sitemap.xml.ts
+│   ├── translate.ts
+│   └── _utils
+│       ├── auth.ts
+│       └── supabaseAdmin.ts
+├── bun.lockb
+├── components.json
+├── .env.local
+├── eslint.config.js
+├── export-webapp-code.sh
+├── .github
+│   └── workflow
+│       └── test.yml
+├── .gitignore
+├── .idea
+│   ├── dictionaries
+│   │   └── project.xml
+│   ├── .gitignore
+│   ├── modules.xml
+│   ├── vavus-connect.iml
+│   ├── vcs.xml
+│   └── workspace.xml
+├── index.html
+├── package.json
+├── package-lock.json
+├── postcss.config.js
+├── public
+│   ├── favicon.ico
+│   ├── images
+│   │   ├── device.png
+│   │   ├── dragos.jpg
+│   │   ├── placeholder.svg
+│   │   └── vavus-og.jpg
+│   ├── Kickstarter
+│   │   ├── hero.jpg
+│   │   ├── icons
+│   │   │   ├── multi-white-static.svg
+│   │   │   ├── ocr-white-static.svg
+│   │   │   └── offline-white-static.svg
+│   │   ├── og.jpg
+│   │   └── timeline.png
+│   ├── placeholder.svg
+│   └── robots.txt
+├── README.md
+├── src
+│   ├── App.css
+│   ├── App.tsx
+│   ├── components
+│   │   ├── blog
+│   │   │   └── BlogCard.tsx
+│   │   ├── chat
+│   │   │   ├── ChatMessages.tsx
+│   │   │   ├── ConversationSidebar.tsx
+│   │   │   ├── MessageInput.tsx
+│   │   │   └── ScrollToBottom.tsx
+│   │   ├── DeviceShowcase.tsx
+│   │   ├── layout
+│   │   │   ├── Footer.tsx
+│   │   │   └── Navbar.tsx
+│   │   ├── ProtectedRoute.tsx
+│   │   ├── SubscribeForm.tsx
+│   │   └── ui
+│   │       ├── accordion.tsx
+│   │       ├── alert-dialog.tsx
+│   │       ├── alert.tsx
+│   │       ├── aspect-ratio.tsx
+│   │       ├── avatar.tsx
+│   │       ├── badge.tsx
+│   │       ├── breadcrumb.tsx
+│   │       ├── button.tsx
+│   │       ├── calendar.tsx
+│   │       ├── card.tsx
+│   │       ├── carousel.tsx
+│   │       ├── chart.tsx
+│   │       ├── checkbox.tsx
+│   │       ├── collapsible.tsx
+│   │       ├── command.tsx
+│   │       ├── context-menu.tsx
+│   │       ├── dialog.tsx
+│   │       ├── drawer.tsx
+│   │       ├── dropdown-menu.tsx
+│   │       ├── form.tsx
+│   │       ├── hover-card.tsx
+│   │       ├── input-otp.tsx
+│   │       ├── input.tsx
+│   │       ├── label.tsx
+│   │       ├── menubar.tsx
+│   │       ├── navigation-menu.tsx
+│   │       ├── pagination.tsx
+│   │       ├── popover.tsx
+│   │       ├── progress.tsx
+│   │       ├── radio-group.tsx
+│   │       ├── resizable.tsx
+│   │       ├── scroll-area.tsx
+│   │       ├── select.tsx
+│   │       ├── separator.tsx
+│   │       ├── sheet.tsx
+│   │       ├── sidebar.tsx
+│   │       ├── skeleton.tsx
+│   │       ├── slider.tsx
+│   │       ├── sonner.tsx
+│   │       ├── subscribe-modal.tsx
+│   │       ├── switch.tsx
+│   │       ├── table.tsx
+│   │       ├── tabs.tsx
+│   │       ├── textarea.tsx
+│   │       ├── toaster.tsx
+│   │       ├── toast.tsx
+│   │       ├── toggle-group.tsx
+│   │       ├── toggle.tsx
+│   │       ├── tooltip.tsx
+│   │       └── use-toast.ts
+│   ├── hooks
+│   │   ├── useConversations.ts
+│   │   ├── useIsAdmin.ts
+│   │   ├── useMessages.ts
+│   │   ├── use-mobile.tsx
+│   │   ├── useSession.ts
+│   │   ├── useStreamedChat.ts
+│   │   ├── use-toast.ts
+│   │   └── useTranslate.ts
+│   ├── index.css
+│   ├── lib
+│   │   ├── api.ts
+│   │   ├── languages
+│   │   │   └── madlad.ts
+│   │   ├── supabase.ts
+│   │   └── utils.ts
+│   ├── main.tsx
+│   ├── pages
+│   │   ├── About.tsx
+│   │   ├── AccountPage.tsx
+│   │   ├── AIChat.tsx
+│   │   ├── AuthPage.tsx
+│   │   ├── BlogList.tsx
+│   │   ├── BlogNew.tsx
+│   │   ├── BlogView.tsx
+│   │   ├── Business.tsx
+│   │   ├── Contact.tsx
+│   │   ├── Index.tsx
+│   │   ├── Join.tsx
+│   │   ├── Kickstarter.tsx
+│   │   ├── Login.tsx
+│   │   ├── NotFound.tsx
+│   │   ├── Privacy.tsx
+│   │   ├── Timeline.tsx
+│   │   ├── Translate.tsx
+│   │   ├── VavusAI.tsx
+│   │   └── VavusApps.tsx
+│   └── vite-env.d.ts
+├── tailwind.config.ts
+├── tests
+│   └── chat.spec.ts
+├── tsconfig.app.json
+├── tsconfig.json
+├── tsconfig.node.json
+├── tsconfig.tests.json
+├── vercel.json
+├── vite.config.ts
+├── vitest.config.ts
+└── webapp-code-20250917-122714.txt
+
+24 directories, 154 files
+
+===== FILES =====

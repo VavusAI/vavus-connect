@@ -1,7 +1,6 @@
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import SubscribeForm from "@/components/SubscribeForm";
 
 const Kickstarter: React.FC = () => {
     return (
@@ -11,17 +10,16 @@ const Kickstarter: React.FC = () => {
                 <Card className="border border-border">
                     <CardHeader className="text-center">
                         <CardTitle className="text-4xl md:text-5xl font-bold">
-                           Fully encrypted OS, fully encrypted apps, fully encrypted server!
+                            Fully encrypted OS, fully encrypted apps, fully encrypted server!
                         </CardTitle>
                         <p className="mt-4 text-lg md:text-xl text-muted-foreground">
                             Private, on-device translation for hospitals, courts, schools, and travelers.
                         </p>
                     </CardHeader>
-                    <CardContent className="flex flex-col md:flex-row justify-center gap-4">
-                        <Input type="email" placeholder="Enter your email" className="md:w-96" />
-                        <Button className="bg-primary text-primary-foreground hover:bg-primary-hover">
-                            Notify Me
-                        </Button>
+
+                    {/* Replaced inert input+button with shared SubscribeForm */}
+                    <CardContent className="flex justify-center">
+                        <SubscribeForm />
                     </CardContent>
 
                     <img
@@ -65,11 +63,10 @@ const Kickstarter: React.FC = () => {
                 <div className="mt-16 text-center">
                     <h3 className="text-2xl md:text-3xl font-bold mb-3">Join the waitlist</h3>
                     <p className="text-muted-foreground mb-6">Get early-bird pricing and exclusive updates.</p>
-                    <div className="flex flex-col md:flex-row justify-center gap-4">
-                        <Input type="email" placeholder="Enter your email" className="md:w-96" />
-                        <Button className="bg-primary text-primary-foreground hover:bg-primary-hover">
-                            Notify Me
-                        </Button>
+
+                    {/* Replaced inert input+button with shared SubscribeForm */}
+                    <div className="flex justify-center">
+                        <SubscribeForm />
                     </div>
                 </div>
             </div>
