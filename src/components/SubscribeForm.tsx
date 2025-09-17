@@ -11,7 +11,7 @@ type Props = { className?: string; page?: string };
 
 export default function SubscribeForm({ className = "", page }: Props) {
     const [email, setEmail] = useState("");
-    const [status, setStatus] = useState<"idle"|"loading"|"ok"|"error">("idle");
+    const [status, setStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
     const [msg, setMsg] = useState("");
 
     async function onSubmit(e: React.FormEvent) {
@@ -36,18 +36,22 @@ export default function SubscribeForm({ className = "", page }: Props) {
             // Try to get user id (ok if unauthenticated)
             let user_id: string | null = null;
             try {
-                const { data } = await supabase.auth.getUser();
+                const {data} = await supabase.auth.getUser();
                 user_id = data?.user?.id ?? null;
-            } catch { /* ignore */ }
+            } catch { /* ignore */
+            }
 
             // Single source of truth: plain INSERT; duplicate -> success
-            const { error } = await supabase
+            const {error} = await supabase
                 .from("subscriptions")
-                .insert([{ email: clean, user_id, page: pagePath, utm }]);
+                .insert([{email: clean, user_id, page: pagePath, utm}]);
 
             if (error) {
                 if (error.code === "23505" || /duplicate key|unique/i.test(error.message)) {
-                    setStatus("ok"); setMsg("You’re in! 🎉"); setEmail(""); return;
+                    setStatus("ok");
+                    setMsg("You’re in! 🎉");
+                    setEmail("");
+                    return;
                 }
                 console.error("[SubscribeForm] Supabase insert error:", error);
                 setStatus("error");
