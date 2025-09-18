@@ -1,26 +1,25 @@
+// /api/ai-stream.ts
 export const config = { runtime: 'edge' };
 
 type Role = 'system' | 'user' | 'assistant';
 type ChatMsg = { role: Role; content: string };
 
 type ReqBody = {
-    conversationId: string;
-    messages: ChatMsg[];            // will already include system + rollup + recent turns + user
+    conversationId?: string;              // now optional
+    messages: ChatMsg[];                  // should already include system + rollup + recent + user
     mode?: 'fast' | 'thinking';
     longMode?: boolean;
     temperature?: number;
-    model?: string;                 // default GLM 4.5 Air (free)
+    model?: string;
+    serverPersist?: boolean;              // opt-in: if true AND conversationId present, save+rollup server-side
 };
 
 const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'z-ai/glm-4.5-air:free';
 
 function buildReasoning(mode?: 'fast' | 'thinking') {
-    // GLM-4.5-Air supports unified "reasoning" control.
-    // We exclude chain-of-thought from output to avoid leakage.
-    if (mode === 'thinking') {
-        return { enabled: true, effort: 'medium', exclude: true };
-    }
+    // GLM-4.5-Air supports unified reasoning control. Exclude CoT from output.
+    if (mode === 'thinking') return { enabled: true, effort: 'medium', exclude: true };
     return { enabled: false };
 }
 
@@ -29,7 +28,7 @@ function extractDeltaFromSSEChunk(chunkText: string): string {
     let acc = '';
     const blocks = chunkText.split('\n\n');
     for (const block of blocks) {
-        const line = block.split('\n').find(l => l.startsWith('data:'));
+        const line = block.split('\n').find((l) => l.startsWith('data:'));
         if (!line) continue;
         const payload = line.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
@@ -52,16 +51,18 @@ export default async function handler(req: Request) {
 
     const body = (await req.json().catch(() => ({}))) as ReqBody;
     const {
-        conversationId,
+        conversationId,                 // optional now
         messages = [],
         mode = 'fast',
         longMode = false,
         temperature = 0.3,
         model = DEFAULT_MODEL,
+        serverPersist = false,          // OFF by default
     } = body;
 
-    if (!conversationId) {
-        return new Response('Missing conversationId', { status: 400 });
+    // Basic validation
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return new Response('Missing messages', { status: 400 });
     }
 
     const key = process.env.OPENROUTER_API_KEY;
@@ -73,7 +74,7 @@ export default async function handler(req: Request) {
     const maxTokens = longMode ? 2048 : 1024;
     const reasoning = buildReasoning(mode);
 
-    // Call OpenRouter
+    // Upstream request to OpenRouter (OpenAI-compatible)
     const upstream = await fetch(OPENROUTER_API, {
         method: 'POST',
         headers: {
@@ -97,12 +98,11 @@ export default async function handler(req: Request) {
         return new Response(`OpenRouter error ${upstream.status}: ${text}`, { status: 500 });
     }
 
-    // We need to both stream to the client and capture the final assistant text to save + rollup.
+    // Stream to client while accumulating assistant text for optional persistence
     const { readable, writable } = new TransformStream();
     const reader = upstream.body.getReader();
     const writer = writable.getWriter();
     const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
 
     let assistantFull = '';
 
@@ -112,35 +112,30 @@ export default async function handler(req: Request) {
                 const { value, done } = await reader.read();
                 if (done) break;
                 if (value) {
-                    // Tee to client
+                    // Tee upstream bytes to client
                     await writer.write(value);
-                    // Accumulate assistant text for DB save
-                    const chunkText = decoder.decode(value, { stream: true });
-                    assistantFull += extractDeltaFromSSEChunk(chunkText);
+                    // Accumulate assistant text for saving/rollup
+                    assistantFull += extractDeltaFromSSEChunk(decoder.decode(value, { stream: true }));
                 }
             }
         } catch {
-            // swallow streaming errors; client already gets partial
+            // ignore streaming errors; client already got partial tokens
         } finally {
             try { await writer.close(); } catch {}
-            // Save assistant message and trigger rollup logic in the background (no await)
-            // Fire-and-forget: call our own edge endpoint for persistence.
-            fetch('/api/rollup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                // Include assistant text to be saved, then compute rollup server-side
-                body: JSON.stringify({
-                    conversationId,
-                    assistantText: assistantFull,
-                    mode,
-                    longMode,
-                    // We assume the *user* message has already been saved by the client pre-send,
-                    // or server has logic to save both; if not, extend your client to POST user msg first.
-                    // If you already save inside this route, you can wire directly to Supabase here instead
-                    // of hitting /api/rollup; this indirection avoids blocking the stream end.
-                    action: 'save_and_maybe_rollup',
-                }),
-            }).catch(() => {});
+            // Fire-and-forget persistence ONLY if explicitly requested and we have an id
+            if (serverPersist && conversationId && assistantFull) {
+                fetch('/api/rollup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'save_and_maybe_rollup',
+                        conversationId,
+                        assistantText: assistantFull,
+                        mode,
+                        longMode,
+                    }),
+                }).catch(() => {});
+            }
         }
     })();
 
