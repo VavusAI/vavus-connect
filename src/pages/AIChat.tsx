@@ -28,18 +28,31 @@ function stripReasoning(s: string): string {
     return out.trim();
 }
 
+/** Map UI mode to server reasoning mode */
+function uiModeToServer(mode: Mode): 'fast' | 'thinking' {
+    return mode === 'thinking' ? 'thinking' : 'fast';
+}
+
 /** ---- SSE streaming helper (OpenAI-style) ---- */
 async function streamChat({
+                              conversationId,
+                              mode,
+                              longMode,
                               messages,
                               maxTokens,
                               web,
+                              serverPersist,
                               onDelta,
                               onDone,
                               onError,
                           }: {
+    conversationId?: string;
+    mode: Mode;
+    longMode: boolean;
     messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
     maxTokens: number;
     web?: boolean;
+    serverPersist?: boolean;
     onDelta: (chunk: string) => void;
     onDone: (full: string) => void;
     onError: (e: unknown) => void;
@@ -49,14 +62,21 @@ async function streamChat({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
+                conversationId,                    // optional; used for server-side save+rollup
+                mode: uiModeToServer(mode),        // 'fast' | 'thinking'
+                longMode,                          // informs token budget & rollup thresholds
+                model: 'z-ai/glm-4.5-air:free',    // OpenRouter GLM 4.5 Air
                 temperature: 0.3,
                 max_tokens: maxTokens,
                 messages,
-                web,
+                web,                                // harmless passthrough (prepass uses this)
+                serverPersist: Boolean(serverPersist && conversationId), // only persist if we have an id
             }),
         });
-        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok || !res.body) {
+            const txt = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}${txt ? `: ${txt}` : ''}`);
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder('utf-8');
@@ -212,7 +232,8 @@ const AIChat: React.FC = () => {
             guardTimerRef.current = null;
         }
 
-        // Build base streaming context (last ~6 turns + system)
+        // Build base streaming context (keep your existing look/feel)
+        // You can later switch to 4 vs 8 turns here; for now we keep your ~6 pattern.
         let streamingMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
             { role: 'system', content: 'You are VAVUS AI. Be concise, actionable, and accurate.' },
             ...(msgs as DbMessage[]).slice(-6).map((m) => ({ role: m.role, content: m.content })),
@@ -240,8 +261,8 @@ const AIChat: React.FC = () => {
                         noPersist: true, // do not save this step
                     }),
                 });
-                const { reply } = await res.json();
-                const reasoning = stripReasoning(reply || '');
+                const { internalNote } = await res.json();
+                const reasoning = stripReasoning(internalNote || '');
                 if (reasoning) {
                     streamingMessages.push({
                         role: 'system',
@@ -261,9 +282,13 @@ const AIChat: React.FC = () => {
         const maxTokens = longMode ? 2048 : 1024;
 
         await streamChat({
+            conversationId: activeId,            // optional; if present we can server-persist & rollup
+            mode,
+            longMode,
             messages: streamingMessages,
             maxTokens,
             web: useInternet,
+            serverPersist: Boolean(activeId),    // only persist server-side when we already have an id
             onDelta: (chunk) => {
                 // Accumulate raw (may include CoT). Guard until </think> or timeout.
                 rawRef.current += chunk;
