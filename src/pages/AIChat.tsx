@@ -387,7 +387,7 @@ const AIChat: React.FC = () => {
                         <h1 className="mb-1">
                             <span className="gradient-text">AI Chat Assistant</span>
                         </h1>
-                        <p className="text-sm text-muted-foreground">Your conversations are saved privately to your account.</p>
+                        <p className="text-sm text-muted-foreground">Experimental feature: this AI Chat is used to develop our models—expect the occasional quirky or inaccurate reply, and note that some features may be unavailable while we test.</p>
                     </div>
 
                     {/* Conversation picker */}
