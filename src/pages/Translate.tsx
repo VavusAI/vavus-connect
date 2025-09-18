@@ -7,7 +7,7 @@ import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { translateText } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
-import { MADLAD_LANGUAGES, AUTO_CODE, labelFor } from '@/lib/languages/madlad';
+import { FULL_MADLAD_LANGUAGES as MADLAD_LANGUAGES, AUTO_CODE, labelFor } from '@/lib/languages/madlad';
 
 type TranslationRow = {
   id: string;
