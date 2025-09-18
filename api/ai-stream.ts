@@ -1,178 +1,155 @@
-/* eslint-disable import/no-unused-modules */
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { searchWeb } from './services/web.js';
+export const config = { runtime: 'edge' };
 
-export const config = { runtime: 'nodejs' };
+type Role = 'system' | 'user' | 'assistant';
+type ChatMsg = { role: Role; content: string };
 
-function setSSE(res: VercelResponse) {
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-}
+type ReqBody = {
+    conversationId: string;
+    messages: ChatMsg[];            // will already include system + rollup + recent turns + user
+    mode?: 'fast' | 'thinking';
+    longMode?: boolean;
+    temperature?: number;
+    model?: string;                 // default GLM 4.5 Air (free)
+};
 
-function writeDelta(res: VercelResponse, model: string, chunk: string) {
-    const frame = {
-        id: `chatcmpl_${Date.now()}`,
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-    };
-    res.write(`data: ${JSON.stringify(frame)}\n\n`);
-}
+const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_MODEL = 'z-ai/glm-4.5-air:free';
 
-function safeParseJSON<T = any>(t: string): T | null { try { return JSON.parse(t); } catch { return null; } }
-
-function stripHeuristics(s: string) {
-    if (!s) return s;
-    let out = s;
-    out = out.replace(/```(?:think|thinking|reasoning)[\s\S]*?```/gi, '');
-    out = out.replace(/<think>[\s\S]*?<\/think>/gi, '');
-    out = out.replace(/<\|think\|>[\s\S]*?(?=<\|assistant\|>)/gi, '');
-    out = out.replace(/^\s*reasoning:\s*[\s\S]*?(?=^\S|\Z)/gim, '');
-    out = out.replace(/^\s*(okay|so|hmm|i'?m|let'?s|i think|i will|i should|the user|they said)\b[\s\S]*?(?=\n{2,}|$)/i, '');
-    return out.trim();
-}
-
-function extractFinalFromOpenAI(rawJson: string): string {
-    const data = safeParseJSON<any>(rawJson) ?? {};
-    const output = data?.output ?? data;
-
-    let content: any =
-        output?.choices?.[0]?.message?.content ??
-        output?.choices?.[0]?.delta?.content ??
-        output?.text ?? '';
-
-    if (typeof content === 'string') {
-        const inner = safeParseJSON<any>(content);
-        if (inner && typeof inner.final === 'string' && inner.final.trim()) return inner.final.trim();
-        const t = content.match(/<final>([\s\S]*?)<\/final>/i);
-        if (t && t[1]?.trim()) return t[1].trim();
-        return stripHeuristics(content);
+function buildReasoning(mode?: 'fast' | 'thinking') {
+    // GLM-4.5-Air supports unified "reasoning" control.
+    // We exclude chain-of-thought from output to avoid leakage.
+    if (mode === 'thinking') {
+        return { enabled: true, effort: 'medium', exclude: true };
     }
-
-    if (content && typeof content === 'object' && typeof content.final === 'string') {
-        return content.final.trim();
-    }
-
-    const embedded = (rawJson.match(/\{[\s\S]*\}/) || [])[0];
-    const inner2 = embedded ? safeParseJSON<any>(embedded) : null;
-    if (inner2 && typeof inner2.final === 'string' && inner2.final.trim()) return inner2.final.trim();
-    return '';
+    return { enabled: false };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-    if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
-
-    const url = (process.env.RUNPOD_CHAT_URL || '').replace(/\/+$/, '');
-    const token = process.env.RUNPOD_CHAT_TOKEN || '';
-    if (!url || !token) return res.status(500).json({ error: 'Missing RUNPOD_CHAT_URL or RUNPOD_CHAT_TOKEN' });
-
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const messages = body?.messages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-    const web = Boolean(body?.web ?? body?.useInternet);
-    const model = body?.model || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
-    const temperature = body?.temperature ?? 0.3;
-    const max_tokens = body?.max_tokens;
-
-    if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages[] is required' });
-
-    // Build prompt with optional web snippets
-    const userText = [...messages].reverse().find(m => m.role === 'user')?.content || '';
-    let webSnippets = '';
-    let sources: { title: string; url: string }[] = [];
-
-    if (web && userText) {
-        const { results, snippetsText } = await searchWeb(userText, { topK: 5, language: 'en' });
-        webSnippets = snippetsText;
-        sources = results.map(r => ({ title: r.title, url: r.url }));
-    }
-
-    const outputContract: { role: 'system'; content: string } = {
-        role: 'system',
-        content:
-            (webSnippets ? `${webSnippets}\n\n` : '') +
-            'Reply ONLY as a single JSON object with this exact shape and nothing else:\n' +
-            '{ "final": "<the final answer shown to the user>" }\n' +
-            (sources.length
-                ? `When composing the final answer, ensure it is grounded in the snippets above.`
-                : 'Do not invent facts.'),
-    };
-
-    setSSE(res);
-    res.write(': connected\n\n');
-    const keepalive = setInterval(() => res.write(': ping\n\n'), 15000);
-
-    const abort = new AbortController();
-    req.on('close', () => abort.abort());
-
-    try {
-        // Non-stream upstream call (prevents reasoning leakage)
-        const upstream = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-                authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-                model,
-                messages: [...messages, outputContract],
-                temperature,
-                max_tokens,
-                stream: false,
-                response_format: { type: 'json_object' },
-            }),
-            signal: abort.signal,
-        });
-
-        const raw = await upstream.text();
-        if (!upstream.ok) {
-            clearInterval(keepalive);
-            res.status(upstream.status).end(raw || `Upstream ${upstream.status}`);
-            return;
+/** Parse SSE 'data:' lines to collect assistant delta text only */
+function extractDeltaFromSSEChunk(chunkText: string): string {
+    let acc = '';
+    const blocks = chunkText.split('\n\n');
+    for (const block of blocks) {
+        const line = block.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+            const json = JSON.parse(payload);
+            const delta =
+                json?.choices?.[0]?.delta?.content ??
+                json?.choices?.[0]?.message?.content ??
+                '';
+            if (delta) acc += delta;
+        } catch {
+            // ignore non-JSON keepalives
         }
+    }
+    return acc;
+}
 
-        const final = extractFinalFromOpenAI(String(raw || ''));
+export default async function handler(req: Request) {
+    if (req.method !== 'POST') return new Response('Only POST', { status: 405 });
 
-        // Stream the clean final
-        const target = Math.max(80, Math.min(160, Math.floor(final.length / 40) || 120));
-        let i = 0;
-        while (i < final.length) {
-            const next = Math.min(i + target, final.length);
-            let j = next;
-            if (j < final.length) {
-                const space = final.lastIndexOf(' ', next);
-                if (space > i + 20) j = space;
+    const body = (await req.json().catch(() => ({}))) as ReqBody;
+    const {
+        conversationId,
+        messages = [],
+        mode = 'fast',
+        longMode = false,
+        temperature = 0.3,
+        model = DEFAULT_MODEL,
+    } = body;
+
+    if (!conversationId) {
+        return new Response('Missing conversationId', { status: 400 });
+    }
+
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) return new Response('Missing OPENROUTER_API_KEY', { status: 500 });
+
+    const site = process.env.OPENROUTER_SITE_URL || req.headers.get('origin') || 'https://shopvavus.com';
+    const title = process.env.OPENROUTER_APP_NAME || 'VAVUS AI';
+
+    const maxTokens = longMode ? 2048 : 1024;
+    const reasoning = buildReasoning(mode);
+
+    // Call OpenRouter
+    const upstream = await fetch(OPENROUTER_API, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': site,
+            'X-Title': title,
+        },
+        body: JSON.stringify({
+            model,
+            stream: true,
+            temperature,
+            max_tokens: maxTokens,
+            reasoning,
+            messages,
+        }),
+    });
+
+    if (!upstream.ok || !upstream.body) {
+        const text = await upstream.text().catch(() => '');
+        return new Response(`OpenRouter error ${upstream.status}: ${text}`, { status: 500 });
+    }
+
+    // We need to both stream to the client and capture the final assistant text to save + rollup.
+    const { readable, writable } = new TransformStream();
+    const reader = upstream.body.getReader();
+    const writer = writable.getWriter();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+
+    let assistantFull = '';
+
+    (async () => {
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) {
+                    // Tee to client
+                    await writer.write(value);
+                    // Accumulate assistant text for DB save
+                    const chunkText = decoder.decode(value, { stream: true });
+                    assistantFull += extractDeltaFromSSEChunk(chunkText);
+                }
             }
-            writeDelta(res, model, final.slice(i, j));
-            i = j;
-            // eslint-disable-next-line no-await-in-loop
-            await new Promise((r) => setTimeout(r, 10));
+        } catch {
+            // swallow streaming errors; client already gets partial
+        } finally {
+            try { await writer.close(); } catch {}
+            // Save assistant message and trigger rollup logic in the background (no await)
+            // Fire-and-forget: call our own edge endpoint for persistence.
+            fetch('/api/rollup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                // Include assistant text to be saved, then compute rollup server-side
+                body: JSON.stringify({
+                    conversationId,
+                    assistantText: assistantFull,
+                    mode,
+                    longMode,
+                    // We assume the *user* message has already been saved by the client pre-send,
+                    // or server has logic to save both; if not, extend your client to POST user msg first.
+                    // If you already save inside this route, you can wire directly to Supabase here instead
+                    // of hitting /api/rollup; this indirection avoids blocking the stream end.
+                    action: 'save_and_maybe_rollup',
+                }),
+            }).catch(() => {});
         }
+    })();
 
-        // (Optional) send a metadata frame with sources — harmless for clients that ignore it
-        if (sources.length) {
-            res.write(`data: ${JSON.stringify({ meta: { sources } })}\n\n`);
-        }
-
-        res.write(
-            `data: ${JSON.stringify({
-                id: `chatcmpl_${Date.now()}`,
-                object: 'chat.completion.chunk',
-                created: Math.floor(Date.now() / 1000),
-                model,
-                choices: [{ index: 0, message: { role: 'assistant', content: '' }, finish_reason: 'stop' }],
-            })}\n\n`
-        );
-        res.write('data: [DONE]\n\n');
-    } catch (err: any) {
-        if (!abort.signal.aborted) {
-            res.write(`data: ${JSON.stringify({ error: String(err?.message || err) })}\n\n`);
-            res.write('data: [DONE]\n\n');
-        }
-    } finally {
-        clearInterval(keepalive);
-        res.end();
-    }
+    return new Response(readable, {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+        },
+    });
 }

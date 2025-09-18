@@ -1,93 +1,190 @@
-import { runpodChat } from './runpod.js';
-import { logRunpod } from '../_runpod.js';
-import { stripReasoning, norm, Msg } from './prompt.js';
+import { supabaseAdmin } from '../_utils/supabaseAdmin';
+import type { Msg } from './prompt';
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B';
-const SUMMARY_REFRESH_EVERY = 8;
+export type Role = 'system' | 'user' | 'assistant';
 
-export async function ensureConversation(conversationId: string | undefined, userId: string | null) {
-    const { supabaseAdmin } = await import('../_utils/supabaseAdmin.js');
-    if (!conversationId) {
-        const { data, error } = await supabaseAdmin
-            .from('conversations')
-            .insert({ user_id: userId })
-            .select('*')
-            .single();
-        if (error) throw new Error(`DB error: ${error.message}`);
-        conversationId = (data as any).id as string;
-    }
+export type DbMessage = {
+    id: string;
+    conversation_id: string;
+    role: Role;
+    content: string;
+    created_at: string;
+};
 
-    const { data: prior, error: histErr } = await supabaseAdmin
+export type Rollup = {
+    id: string;
+    conversation_id: string;
+    mode: 'regular' | 'long';
+    up_to_message_id: string;
+    summary_text: string;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    created_at: string;
+};
+
+export async function saveMessage(
+    conversationId: string,
+    role: Role,
+    content: string,
+) {
+    const { data, error } = await supabaseAdmin
         .from('messages')
-        .select('role, content')
+        .insert([{ conversation_id: conversationId, role, content }])
+        .select()
+        .single();
+
+    if (error) throw error;
+    return data as DbMessage;
+}
+
+export async function getRecentMessages(conversationId: string, n: number) {
+    const { data, error } = await supabaseAdmin
+        .from('messages')
+        .select('*')
         .eq('conversation_id', conversationId)
         .order('created_at', { ascending: true });
-    if (histErr) throw new Error(`DB error: ${histErr.message}`);
 
-    const history: Msg[] = (prior || []).map(m => ({
-        role: (m as any).role as Msg['role'],
-        content: String((m as any).content ?? ''),
-    }));
-
-    let conv: any = { summary: '', turns_count: 0, long_mode_enabled: false };
-    try {
-        const { data } = await supabaseAdmin
-            .from('conversations')
-            .select('*')
-            .eq('id', conversationId)
-            .single();
-        if (data) conv = data;
-    } catch {}
-
-    return { conversationId, conv, history };
+    if (error) throw error;
+    const all = (data || []) as DbMessage[];
+    return all.slice(-n);
 }
 
-export async function persistTurn(conversationId: string, userId: string | null, message: string, reply: string) {
-    const { supabaseAdmin } = await import('../_utils/supabaseAdmin.js');
-    const { error: umErr } = await supabaseAdmin.from('messages').insert({
-        conversation_id: conversationId,
-        user_id: userId,
-        role: 'user',
-        content: message,
-    });
-    if (umErr) throw new Error(umErr.message);
+export async function getAllMessages(conversationId: string) {
+    const { data, error } = await supabaseAdmin
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true });
 
-    const { error: amErr } = await supabaseAdmin.from('messages').insert({
-        conversation_id: conversationId,
-        user_id: userId,
-        role: 'assistant',
-        content: reply,
-    });
-    if (amErr) throw new Error(amErr.message);
+    if (error) throw error;
+    return (data || []) as DbMessage[];
 }
 
-export async function summarize(history: Msg[], longMode: boolean, chat = runpodChat): Promise<string> {
-    const sumMsgs: Msg[] = [
-        { role: 'system', content:
-                'Summarize the conversation so far into 200–400 words: goals, decisions (+why), constraints, open tasks. Use short bullets; compact and durable; no quotes.' },
-        ...history,
-        { role: 'user', content: 'Update the running summary now.' },
-    ];
-    const { assistantText } = await chat({
-        model: DEFAULT_MODEL,
-        messages: sumMsgs,
-        temperature: 0.1,
-        max_tokens: longMode ? 1200 : 600,
-        logger: logRunpod,
-    });
-    return stripReasoning(norm(assistantText));
+export async function getLatestRollup(conversationId: string, mode: 'regular' | 'long') {
+    const { data, error } = await supabaseAdmin
+        .from('conversation_rollups')
+        .select('*')
+        .eq('conversation_id', conversationId)
+        .eq('mode', mode)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+    if (error) throw error;
+    return (data?.[0] as Rollup) || null;
 }
 
-export async function maybeSummarize(conversationId: string, history: Msg[], turnsNext: number, longMode: boolean) {
-    const { supabaseAdmin } = await import('../_utils/supabaseAdmin.js');
-    const updates: Record<string, any> = { turns_count: turnsNext, updated_at: new Date().toISOString() };
-    if (turnsNext > 4 && turnsNext % SUMMARY_REFRESH_EVERY === 0) {
-        try {
-            const summary = await summarize(history, longMode);
-            if (summary) updates.summary = summary.slice(0, longMode ? 12000 : 6000);
-        } catch {
-            // ignore summarization errors
+export async function upsertRollup(params: {
+    conversationId: string;
+    mode: 'regular' | 'long';
+    upToMessageId: string;
+    summaryText: string;
+    inputTokens?: number;
+    outputTokens?: number;
+}) {
+    const { conversationId, mode, upToMessageId, summaryText, inputTokens, outputTokens } = params;
+
+    const { data, error } = await supabaseAdmin
+        .from('conversation_rollups')
+        .insert([{
+            conversation_id: conversationId,
+            mode,
+            up_to_message_id: upToMessageId,
+            summary_text: summaryText,
+            input_tokens: inputTokens ?? null,
+            output_tokens: outputTokens ?? null,
+        }])
+        .select()
+        .single();
+
+    if (error) throw error;
+    return data as Rollup;
+}
+
+export async function countUserTurnsSinceLastRollup(conversationId: string, mode: 'regular' | 'long') {
+    const latest = await getLatestRollup(conversationId, mode);
+    const sinceFilter = latest?.up_to_message_id;
+
+    const { data, error } = await supabaseAdmin
+        .from('messages')
+        .select('role,id,created_at')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    const all = (data || []) as Pick<DbMessage, 'role' | 'id' | 'created_at'>[];
+
+    let counting = !sinceFilter;
+    let userTurns = 0;
+
+    for (const m of all) {
+        if (!counting) {
+            if (m.id === sinceFilter) counting = true;
+            continue;
         }
+        if (m.role === 'user') userTurns++;
     }
-    await supabaseAdmin.from('conversations').update(updates).eq('id', conversationId);
+
+    return userTurns;
+}
+
+export async function getLastMessageId(conversationId: string) {
+    const { data, error } = await supabaseAdmin
+        .from('messages')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+    if (error) throw error;
+    return data?.[0]?.id as string | undefined;
+}
+
+/**
+ * Legacy helper expected by tests:
+ * Summarize a set of messages to approximately targetTokens.
+ * Uses OpenRouter GLM-4.5-Air (non-streaming).
+ */
+export async function summarize(messages: Msg[], targetTokens = 500): Promise<string> {
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) throw new Error('Missing OPENROUTER_API_KEY');
+
+    const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions';
+    const model = 'z-ai/glm-4.5-air:free';
+    const site = process.env.OPENROUTER_SITE_URL || 'https://shopvavus.com';
+    const title = process.env.OPENROUTER_APP_NAME || 'VAVUS AI';
+
+    const intro =
+        `Summarize the following messages into ~${targetTokens} tokens. ` +
+        `Be concise, factual, and preserve key decisions, entities, and Q&A. ` +
+        `Do NOT include chain-of-thought. Output only the summary.`;
+
+    const stitched = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+
+    const resp = await fetch(OPENROUTER_API, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': site,
+            'X-Title': title,
+        },
+        body: JSON.stringify({
+            model,
+            stream: false,
+            temperature: 0.1,
+            max_tokens: Math.round(targetTokens * 1.2),
+            messages: [
+                { role: 'system', content: 'You are a careful AI summarizer. Output only the summary.' },
+                { role: 'user', content: `${intro}\n\n---\n${stitched}` },
+            ],
+        }),
+    });
+
+    if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(`OpenRouter ${resp.status}: ${text}`);
+    }
+
+    const data = await resp.json().catch(() => ({}));
+    return data?.choices?.[0]?.message?.content ?? '';
 }
