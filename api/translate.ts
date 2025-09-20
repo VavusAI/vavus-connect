@@ -1,6 +1,6 @@
 // /api/translate.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { codeForApi } from '../src/lib/languages/madlad';
+import { codeForApi, LanguageCodeError } from '../src/lib/languages/madlad';
 export const config = { runtime: 'nodejs' };
 
 function bad(res: VercelResponse, status: number, msg: string) {
@@ -20,8 +20,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!text || !requestedTarget) return bad(res, 400, 'Missing text/targetLang');
 
-    const safeSource = requestedSource ? codeForApi(requestedSource) : 'auto';
-    const safeTarget = codeForApi(requestedTarget);
+    let safeSource = 'auto';
+    let safeTarget: string;
+    try {
+        safeSource = requestedSource ? codeForApi(requestedSource) : 'auto';
+        safeTarget = codeForApi(requestedTarget);
+    } catch (error) {
+        if (error instanceof LanguageCodeError) {
+            return bad(res, 400, error.message);
+        }
+        return bad(res, 400, 'Unsupported language selection');
+    }
 
     if (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS);
 

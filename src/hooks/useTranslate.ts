@@ -1,6 +1,7 @@
 // /src/hooks/useTranslate.ts
 import { useState, useCallback } from 'react';
-import { codeForApi } from '@/lib/languages/madlad';
+import { toast } from '@/hooks/use-toast';
+import { codeForApi, LanguageCodeError } from '@/lib/languages/madlad';
 
 export function useTranslate() {
     const [loading, setLoading] = useState(false);
@@ -9,10 +10,28 @@ export function useTranslate() {
     const translate = useCallback(async (opts: { text: string; source?: string | null; target: string; model?: string }) => {
         setLoading(true); setError(null);
         try {
+            let safeSource = 'auto';
+            let safeTarget: string;
+            try {
+                safeSource = opts.source ? codeForApi(opts.source) : 'auto';
+                safeTarget = codeForApi(opts.target);
+            } catch (err) {
+                if (err instanceof LanguageCodeError) {
+                    const message = err.message || 'Unsupported language selection';
+                    setError(message);
+                    toast({
+                        title: 'Unsupported language',
+                        description: message,
+                        variant: 'destructive',
+                    });
+                }
+                throw err;
+            }
+
             const payload: Record<string, unknown> = {
                 text: opts.text,
-                source: opts.source ? codeForApi(opts.source) : 'auto',
-                target: codeForApi(opts.target),
+                source: safeSource,
+                target: safeTarget,
             };
             if (opts.model) payload.model = opts.model;
             const res = await fetch('/api/translate', {

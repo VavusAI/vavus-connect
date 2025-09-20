@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { codeForApi } from './languages/madlad';
+import { codeForApi, LanguageCodeError } from './languages/madlad';
 
 async function getAccessToken() {
     const { data } = await supabase.auth.getSession();
@@ -41,10 +41,21 @@ export async function translateText({ text, sourceLang, targetLang, model }:
                                     { text: string; sourceLang?: string; targetLang?: string; model?: string; }) {
     const token = await getAccessToken();
     if (!targetLang) throw new Error('Target language is required');
+    let safeSource = 'auto';
+    let safeTarget: string;
+    try {
+        safeSource = sourceLang ? codeForApi(sourceLang) : 'auto';
+        safeTarget = codeForApi(targetLang);
+    } catch (error) {
+        if (error instanceof LanguageCodeError) {
+            throw error;
+        }
+        throw new Error('Unsupported language selection');
+    }
 
     const payload: Record<string, unknown> = {
-        source: sourceLang ? codeForApi(sourceLang) : 'auto',
-        target: codeForApi(targetLang),
+        source: safeSource,
+        target: safeTarget,
         text,
     };
     if (model) payload.model = model;

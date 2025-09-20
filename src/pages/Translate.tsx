@@ -8,7 +8,13 @@ import { useToast } from '@/hooks/use-toast';
 import { translateText } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
 import type { Lang } from '@/lib/languages/madlad';
-import { AUTO_CODE, getLanguageOptions, labelFor } from '@/lib/languages/madlad';
+import {
+  AUTO_CODE,
+  codeForApi,
+  getLanguageOptions,
+  labelFor,
+  loadFullMadladLanguages,
+} from '@/lib/languages/madlad';
 
 const SOURCE_LANGUAGES = getLanguageOptions();
 const TARGET_LANGUAGES = getLanguageOptions({ includeAuto: false });

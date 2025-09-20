@@ -84,23 +84,7 @@ export const LANGUAGE_CODE_ALIASES: Record<string, string> = {
     'zh-tw': 'zh-TW'
 };
 
-export const API_CODE_ALIASES: Record<string, string> = {
-    'auto': 'auto',
-    'cmn': 'zh',
-    'cmn-hans': 'zh',
-    'pt-br': 'pt_BR',
-    'pt_br': 'pt_BR',
-    'sr-cyrl': 'sr',
-    'sr-latn': 'sr_Latn',
-    'zh': 'zh',
-    'zh-cn': 'zh',
-    'zh-hans': 'zh',
-    'zh-hant': 'zh_Hant',
-    'zh-hk': 'zh_Hant',
-    'zh-latn': 'zh_Latn',
-    'zh-mo': 'zh_Hant',
-    'zh-tw': 'zh_Hant'
-};
+
 
 const LABEL_OVERRIDES: Record<string, string> = {
     'zh-cn': 'Chinese (Simplified)',
@@ -165,6 +149,12 @@ export function isLikelyValidCode(code: string): boolean {
     if (!canonical) return false;
     const resolved = resolveAlias(canonical, LANGUAGE_CODE_ALIASES);
     return isNormalizedValid(resolved);
+}
+export class LanguageCodeError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'LanguageCodeError';
+    }
 }
 
 type MutableLang = {
@@ -716,6 +706,14 @@ export function getLanguageOptions(options?: { includeAuto?: boolean }): Lang[] 
     const list = includeAuto ? LANGUAGES : LANGUAGES.filter(lang => lang.code !== AUTO_CODE);
     return list.map(lang => ({ ...lang }));
 }
+let fullLanguageCache: Lang[] | null = null;
+
+export async function loadFullMadladLanguages(): Promise<Lang[]> {
+    if (!fullLanguageCache) {
+        fullLanguageCache = getLanguageOptions();
+    }
+    return fullLanguageCache.map(lang => ({ ...lang }));
+}
 
 export function labelFor(code: string): string {
     if (!code) return '';
@@ -728,22 +726,30 @@ export function labelFor(code: string): string {
 }
 
 export function codeForApi(code: string): string {
-    if (!code) return '';
-    const canonical = canonicalizeBcp47(code);
-    if (!canonical) return '';
-    const resolved = resolveAlias(canonical, LANGUAGE_CODE_ALIASES);
-    if (!isNormalizedValid(resolved)) return '';
-    if (resolved === AUTO_CODE) return AUTO_CODE;
-    const key = resolved.toLowerCase();
-    if (BANNED_CODES.has(key)) return '';
-    const alias = API_CODE_ALIASES[key];
-    if (alias) return alias;
-    if (!resolved.includes('-')) return resolved;
-    const parts = resolved.split('-');
-    if (parts.length >= 2 && parts[1].length === 4) {
-        const [language, script, ...rest] = parts;
-        const suffix = rest.length ? `_${rest.join('_')}` : '';
-        return `${language}_${script}${suffix}`;
+    const rawInput = code?.trim();
+    if (!rawInput) {
+        throw new LanguageCodeError('Language code is required');
     }
-    return resolved.replace(/-/g, '_');
+
+    const canonical = canonicalizeBcp47(rawInput);
+    if (!canonical) {
+        throw new LanguageCodeError(`Invalid language code: ${rawInput}`);
+    }
+
+    const resolved = resolveAlias(canonical, LANGUAGE_CODE_ALIASES);
+    if (!isNormalizedValid(resolved)) {
+        throw new LanguageCodeError(`Unsupported language code: ${rawInput}`);
+    }
+    if (resolved === AUTO_CODE) return AUTO_CODE;
+
+    const canonicalResolved = canonicalizeBcp47(resolved);
+    if (!canonicalResolved) {
+        throw new LanguageCodeError(`Invalid language code: ${resolved}`);
+    }
+
+    const lower = canonicalResolved.toLowerCase();
+    if (lower === 'zh-cn') return 'zh';
+    if (lower === 'zh-tw' || lower === 'zh-hant') return 'zh_Hant';
+
+    return canonicalResolved;
 }
