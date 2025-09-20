@@ -1,5 +1,6 @@
 // /api/translate.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { codeForApi } from '../src/lib/languages/madlad';
 export const config = { runtime: 'nodejs' };
 
 function bad(res: VercelResponse, status: number, msg: string) {
@@ -12,9 +13,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method !== 'POST') return bad(res, 405, 'Use POST');
 
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    let { text, sourceLang = 'auto', targetLang, maxNewTokens = 256, beamSize = 4, temperature = 0.2 } = body;
+    let { text, sourceLang = 'auto', targetLang, source, target, maxNewTokens = 256, beamSize = 4, temperature = 0.2 } = body;
 
-    if (!text || !targetLang) return bad(res, 400, 'Missing text/targetLang');
+    const requestedSource = typeof source === 'string' && source.trim() ? source : sourceLang;
+    const requestedTarget = typeof target === 'string' && target.trim() ? target : targetLang;
+
+    if (!text || !requestedTarget) return bad(res, 400, 'Missing text/targetLang');
+
+    const safeSource = requestedSource ? codeForApi(requestedSource) : 'auto';
+    const safeTarget = codeForApi(requestedTarget);
+
     if (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS);
 
     const endpoint = (process.env.MADLAD_RUNPOD_URL || '').replace(/\/+$/, '');
@@ -27,9 +35,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (isTGI) {
         // Text Generation Inference expects "inputs"
         const prompt =
-            sourceLang === 'auto'
-                ? `Translate to ${targetLang}. Output ONLY the translation.\nText: ${text}`
-                : `Translate from ${sourceLang} to ${targetLang}. Output ONLY the translation.\nText: ${text}`;
+            safeSource === 'auto'
+                ? `Translate to ${safeTarget}. Output ONLY the translation.\nText: ${text}`
+                : `Translate from ${safeSource} to ${safeTarget}. Output ONLY the translation.\nText: ${text}`;
         fetchBody = {
             inputs: prompt,
             parameters: {
@@ -41,8 +49,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } else {
         // Custom FastAPI /translate expects top-level fields
         fetchBody = {
-            source: sourceLang,
-            target: targetLang,
+            source: safeSource,
+            target: safeTarget,
+
             text,
             max_new_tokens: maxNewTokens,
             beam_size: beamSize,

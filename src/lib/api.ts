@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { codeForApi } from './languages/madlad';
 
 async function getAccessToken() {
     const { data } = await supabase.auth.getSession();
@@ -39,13 +40,21 @@ export async function saveChat({ conversationId, message, assistantText, mode, l
 export async function translateText({ text, sourceLang, targetLang, model }:
                                     { text: string; sourceLang?: string; targetLang?: string; model?: string; }) {
     const token = await getAccessToken();
+    if (!targetLang) throw new Error('Target language is required');
+
+    const payload: Record<string, unknown> = {
+        source: sourceLang ? codeForApi(sourceLang) : 'auto',
+        target: codeForApi(targetLang),
+        text,
+    };
+    if (model) payload.model = model;
     const r = await fetch('/api/translate', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ text, sourceLang, targetLang, model })
+        body: JSON.stringify(payload)
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json() as Promise<{ output: string }>;

@@ -7,8 +7,11 @@ import { Card } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { translateText } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
-import { FULL_MADLAD_LANGUAGES as MADLAD_LANGUAGES, AUTO_CODE, labelFor } from '@/lib/languages/madlad';
+import type { Lang } from '@/lib/languages/madlad';
+import { AUTO_CODE, getLanguageOptions, labelFor } from '@/lib/languages/madlad';
 
+const SOURCE_LANGUAGES = getLanguageOptions();
+const TARGET_LANGUAGES = getLanguageOptions({ includeAuto: false });
 type TranslationRow = {
   id: string;
   source_lang: string | null;
@@ -25,15 +28,16 @@ const Translate = () => {
   // User-selectable source language (default: auto-detect)
   const [sourceLanguage, setSourceLanguage] = useState<string>(AUTO_CODE);
   // Target language by BCP-47 (default: Spanish)
-  const [targetLanguage, setTargetLanguage] = useState<string>('es');
+  const [targetLanguage, setTargetLanguage] = useState<string>(() => codeForApi('es'));
 
   const [isTranslating, setIsTranslating] = useState(false);
   const [history, setHistory] = useState<TranslationRow[]>([]);
   const { toast } = useToast();
+  const [languageOptions, setLanguageOptions] = useState<Lang[]>(() => getLanguageOptions());
 
   // Lists: source shows ALL (incl. auto), target hides auto
-  const sourceLanguages = MADLAD_LANGUAGES;
-  const targetLanguages = MADLAD_LANGUAGES.filter(l => l.code !== AUTO_CODE);
+  const sourceLanguages = languageOptions;
+  const targetLanguages = languageOptions.filter(l => l.code !== AUTO_CODE);
 
   async function fetchHistory() {
     const { data, error } = await supabase
@@ -48,6 +52,16 @@ const Translate = () => {
   useEffect(() => {
     fetchHistory();
   }, []);
+  useEffect(() => {
+    let active = true;
+    loadFullMadladLanguages()
+        .then((full) => {
+          if (active && full.length) setLanguageOptions(full);
+        })
+        .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
 
   const handleTranslate = async () => {
     if (!sourceText.trim()) return;
