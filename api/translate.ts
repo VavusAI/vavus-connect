@@ -1,101 +1,104 @@
 // /api/translate.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { codeForApi, LanguageCodeError } from '../src/lib/languages/madlad';
-export const config = { runtime: 'nodejs' };
+// Vercel Node serverless route that proxies to your Runpod /translate endpoint.
+// Accepts either {text, source, target} or {text, sourceLang, targetLang} from the client,
+// forwards {text, source, target} to Runpod, and cleans junk tags from the model output.
 
-function bad(res: VercelResponse, status: number, msg: string) {
-    return res.status(status).json({ error: msg });
-}
+import type { NextApiRequest, NextApiResponse } from 'next';
 
-const MAX_CHARS = Number(process.env.TRANSLATE_MAX_CHARS || 8000);
+export const config = {
+    runtime: 'nodejs', // ensure Node runtime (not Edge) so process.env works
+};
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-    if (req.method !== 'POST') return bad(res, 405, 'Use POST');
+type Ok = { output: string; raw?: string };
+type Err = { error: string; detail?: string };
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    let { text, sourceLang = 'auto', targetLang, source, target, maxNewTokens = 256, beamSize = 4, temperature = 0.2 } = body;
+export default async function handler(req: NextApiRequest, res: NextApiResponse<Ok | Err>) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
-    const requestedSource = typeof source === 'string' && source.trim() ? source : sourceLang;
-    const requestedTarget = typeof target === 'string' && target.trim() ? target : targetLang;
-
-    if (!text || !requestedTarget) return bad(res, 400, 'Missing text/targetLang');
-
-    let safeSource = 'auto';
-    let safeTarget: string;
+    // --- 1) Safe body parse ---
+    let body: any = {};
     try {
-        safeSource = requestedSource ? codeForApi(requestedSource) : 'auto';
-        safeTarget = codeForApi(requestedTarget);
-    } catch (error) {
-        if (error instanceof LanguageCodeError) {
-            return bad(res, 400, error.message);
-        }
-        return bad(res, 400, 'Unsupported language selection');
+        // Depending on Next/Vercel config, req.body may already be an object
+        body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    } catch {
+        return res.status(400).json({ error: 'Invalid JSON body' });
     }
 
-    if (text.length > MAX_CHARS) text = text.slice(0, MAX_CHARS);
+    // --- 2) Accept aliases; forward canonical { text, source, target } ---
+    const text = String(body.text ?? '').trim();
+    const source = String(
+        body.source ?? body.sourceLang ?? body.source_lang ?? body.src ?? ''
+    ).trim();
+    const target = String(
+        body.target ?? body.targetLang ?? body.target_lang ?? body.tgt ?? ''
+    ).trim();
 
-    const endpoint = (process.env.MADLAD_RUNPOD_URL || '').replace(/\/+$/, '');
-    if (!endpoint) return bad(res, 500, 'MADLAD_RUNPOD_URL not set');
-
-    const isTGI = /\/generate$/.test(endpoint);
-
-    // --- Build payload for the detected server type ---
-    let fetchBody: any;
-    if (isTGI) {
-        // Text Generation Inference expects "inputs"
-        const prompt =
-            safeSource === 'auto'
-                ? `Translate to ${safeTarget}. Output ONLY the translation.\nText: ${text}`
-                : `Translate from ${safeSource} to ${safeTarget}. Output ONLY the translation.\nText: ${text}`;
-        fetchBody = {
-            inputs: prompt,
-            parameters: {
-                max_new_tokens: maxNewTokens,
-                temperature,
-                return_full_text: false
-            }
-        };
-    } else {
-        // Custom FastAPI /translate expects top-level fields
-        fetchBody = {
-            source: safeSource,
-            target: safeTarget,
-
-            text,
-            max_new_tokens: maxNewTokens,
-            beam_size: beamSize,
-        };
+    if (!text || !source || !target) {
+        return res.status(400).json({ error: 'Missing text/source/target' });
     }
 
+    // --- 3) Normalize & validate upstream URL from env ---
+    let endpoint = (process.env.MADLAD_RUNPOD_URL ?? '').trim().replace(/\/+$/, '');
+    if (!endpoint) {
+        return res.status(500).json({ error: 'MADLAD_RUNPOD_URL not set' });
+    }
+    if (!/^https?:\/\//i.test(endpoint)) {
+        endpoint = 'https://' + endpoint; // only add scheme if missing
+    }
+    try {
+        // throws on invalid URL (e.g., "https://https://...")
+        // eslint-disable-next-line no-new
+        new URL(endpoint);
+    } catch {
+        return res.status(500).json({ error: 'MADLAD_RUNPOD_URL invalid' });
+    }
+
+    // --- 4) Build upstream payload and headers ---
+    const payload = { text, source, target };
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+    };
+    const apiKey = process.env.MADLAD_API_KEY?.trim();
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+    // --- 5) Call Runpod /translate and handle errors clearly ---
     try {
         const r = await fetch(endpoint, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(process.env.MADLAD_API_KEY ? { Authorization: `Bearer ${process.env.MADLAD_API_KEY}` } : {}),
-            },
-            body: JSON.stringify(fetchBody),
+            headers,
+            body: JSON.stringify(payload),
         });
 
-        const txt = await r.text();
-        if (!r.ok) return bad(res, r.status, `Upstream ${r.status}: ${txt}`);
+        const rawText = await r.text(); // read once (can be json or plain text)
+        if (!r.ok) {
+            return res.status(502).json({ error: `Upstream ${r.status}`, detail: rawText });
+        }
 
+        // Some pods return JSON { translation: "..." }, others just plain text
         let data: any = {};
-        try { data = JSON.parse(txt); } catch { /* sometimes servers return plain text */ }
+        try {
+            data = JSON.parse(rawText);
+        } catch {
+            data = { translation: rawText };
+        }
 
-        // Normalize outputs
-        const output =
-            data?.translation ??
-            data?.translated ??
-            data?.output?.text ??
-            data?.output?.translated_text ??
-            data?.generated_text ??         // TGI single output
-            (Array.isArray(data) && data[0]?.generated_text) ?? // TGI batch
-            data?.text ??
-            (typeof data === 'string' ? data : '');
+        const raw = String(data.translation ?? data.output ?? data.text ?? '');
 
-        return res.status(200).json({ output, raw: data });
-    } catch (e: any) {
-        return bad(res, 502, e?.message || 'Upstream translate error');
+        // --- 6) Clean junk tags: leading "(ro)", "<ro>", "<2en>", etc. ---
+        const output = raw
+            .replace(/^\s*\([^)]+\)\s*/i, '') // drop leading "(ro)" or "(en-US)" style hints
+            .replace(/<[^>]+>/g, '')          // drop any tokenizer tags like <ro>, <2en>, <xx>
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        return res.status(200).json({ output, raw });
+    } catch (err: any) {
+        console.error('Translate upstream error:', err);
+        return res.status(502).json({
+            error: 'Upstream translate error',
+            detail: String(err?.message || err),
+        });
     }
 }
